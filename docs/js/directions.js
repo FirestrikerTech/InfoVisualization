@@ -1,36 +1,31 @@
 /**
- * Zero-Latency Analytical / Procedural Loss Landscape Synthesizer (< 0.15 ms per 41x41 grid!).
+ * Zero-Latency Multi-Dimensional Direction Vector & Landscape Synthesizer.
  *
- * Replaces all neural network matrix multiplications, binary downloads, and Web Workers with
- * an instantaneous mathematical surface generator calibrated to the exact MNIST MLP landscapes
- * from Li et al. (2018), "Visualizing the Loss Landscape of Neural Nets".
+ * How the 4-Slider Coordinate Vector Model works (Phase 1):
+ * - Axis α represents the high-dimensional direction vector δ = (δ_1, δ_2, ..., δ_50).
+ * - Axis β represents the high-dimensional direction vector η = (η_1, η_2, ..., η_50).
+ * - Slider 1 ("Durch Dimensionen scrollen") ONLY selects which coordinate index i ∈ {1..50}
+ *   of vector δ you are currently inspecting! Scrolling Slider 1 does NOT change δ or the
+ *   3D plot—it simply updates Slider 2 to show the stored value δ[i].
+ * - Slider 2 ("Wert in dieser Dimension") modifies δ[i] and stores it persistently across
+ *   all 50 dimensions!
+ * - Likewise, Slider 3 selects coordinate j ∈ {1..50} of vector η (without changing the plot),
+ *   and Slider 4 modifies and stores η[j]!
  *
- * Why this looks 100% authentic AND runs at 60 FPS on any smartphone:
- * - Evaluating 1,681 grid points (41x41) only evaluates ~10 float operations per point in a
- *   single preallocated Float32Array (< 0.15 ms total!).
- * - No `fetch()`, no `weights.bin`, no `data.bin`, no `Worker` startup delay.
- * - Preserves all 3 pedagogical phases of the talk:
- *   1. Phase 1 (Manual 4 Sliders):
- *      - Startup (Dim #1 & Dim #2): A flat plateau with a tilted corner ramp / saddle where NO
- *        minimum is visible!
- *      - Scrolling through Dim #1..#42: Produces tilted planes, ReLU creases, 1D canyons, ridges,
- *        and asymmetric cliffs—showing how hopeless coordinate-by-coordinate exploration is in
- *        25,450 dimensions.
- *      - Sweet spot (Dim #44..#50 on both axes, with non-zero strength): Reveals a recognizable
- *        local basin so a persistent listener CAN theoretically find the minimum manually!
- *   2. Phase 2 (Gaussian Random Directions WITHOUT Filter Normalization):
- *      - Because the network weights were rescaled (W1 * 10, W2 / 10), unnormalized Gaussian
- *        directions produce a dramatic, razor-sharp funnel / needle trap!
- *   3. Phase 3 (Secret Presenter Toggle -> Filter Normalization, Li et al. 2018):
- *      - Smoothly transforms the exact same random seed from the sharp funnel into a wide,
- *        flat-bottomed, generalizing valley!
+ * Startup state:
+ * - Only δ[1] = +1.0 and η[2] = +1.0 are non-zero (all other 48 coordinates are 0.00).
+ * - Because Dim #1 and Dim #2 are outer border/ramp directions, the initial landscape is a
+ *   flat plateau with a tilted edge—NO minimum is visible!
+ * - If the user adjusts multiple dimensions (especially coupled dimensions or balanced
+ *   coordinates across layers), the combined direction vectors δ and η gradually carve out
+ *   a 2D slice where the minimum becomes visible!
  */
 
 export const NUM_SCROLL_DIMS = 50;
 const BASE_LOSS = 0.058;
 
 /**
- * Deterministic hash in [-1, 1] for any integer seed.
+ * Deterministic signed hash in [-1, 1].
  */
 function hashSigned(n) {
   let x = (n * 374761393) | 0;
@@ -40,7 +35,7 @@ function hashSigned(n) {
 }
 
 /**
- * Softplus helper: log(1 + exp(x)) scaled for smooth ReLU-like bends in Cross-Entropy loss.
+ * Smooth ReLU / Softplus helper: log(1 + exp(u))
  */
 function softHinge(u) {
   if (u > 12.0) return u;
@@ -49,151 +44,205 @@ function softHinge(u) {
 }
 
 /**
- * Human-readable description of what each dimension index k (1..50) represents
- * in the 25,450-dimensional parameter space.
+ * Human-readable description of each dimension index k (1..50) in the parameter space.
  */
 export function describeDimension(dimIndex) {
   if (dimIndex <= 16) {
-    return `Dim #${dimIndex} · Eingabepixel-Block ${dimIndex}/16 (Schicht 1)`;
+    return `Dim #${dimIndex} · Randpixel-Gewicht ${dimIndex}/16 (Schicht 1)`;
   }
   if (dimIndex <= 32) {
     const neuronIdx = dimIndex - 16;
-    return `Dim #${dimIndex} · Verstecktes Neuron #${neuronIdx} (Schicht 1+2)`;
+    return `Dim #${dimIndex} · Verstecktes Neuron #${neuronIdx} (Schicht 1)`;
   }
   if (dimIndex <= 42) {
     const digit = dimIndex - 33;
-    return `Dim #${dimIndex} · Ausgabe-Klasse „Ziffer ${digit}“ (Schicht 2)`;
+    return `Dim #${dimIndex} · Ausgabeklasse „Ziffer ${digit}“ (Schicht 2)`;
   }
-  return `Dim #${dimIndex} · Schicht-Kopplung #${dimIndex - 42} (Diagonal-Schnitt)`;
+  return `Dim #${dimIndex} · Schicht-Kopplung #${dimIndex - 42} (Schicht 1+2)`;
+}
+
+// Precompute basis properties for all 50 dimensions once at module load (< 0.05 ms)
+const DIM_BASIS = new Array(NUM_SCROLL_DIMS + 1);
+for (let d = 1; d <= NUM_SCROLL_DIMS; d++) {
+  const h1 = hashSigned(d * 101 + 7);
+  const h2 = hashSigned(d * 257 + 19);
+  const h3 = hashSigned(d * 509 + 31);
+
+  if (d <= 16) {
+    // Border/ramp dimensions: contribute linear tilt + one-sided hinge, almost zero curvature!
+    // So when only Dim #1 and Dim #2 are active at startup, the plot is a tilted ramp/plateau
+    // with NO minimum bowl!
+    DIM_BASIS[d] = {
+      tilt: (d % 2 === 0 ? 1.0 : -1.0) * (0.85 + 0.35 * Math.abs(h1)),
+      hingeDir: d % 3 === 0 ? -1.0 : 1.0,
+      hingeWeight: 0.75 + 0.3 * Math.abs(h2),
+      curv: 0.02, // negligible curvature -> no minimum visible!
+      quartic: 0.0,
+      shift: 0.35 * h3,
+      wave: 0.08 * h1,
+    };
+  } else if (d <= 32) {
+    // Hidden neuron dimensions: moderate curvature + asymmetric shift/crease
+    DIM_BASIS[d] = {
+      tilt: 0.55 * h1,
+      hingeDir: h2 >= 0 ? 1.0 : -1.0,
+      hingeWeight: 0.65 * Math.abs(h2),
+      curv: 0.85 + 0.55 * Math.abs(h3),
+      quartic: 0.25,
+      shift: 0.22 * h1,
+      wave: 0.14 * h2,
+    };
+  } else if (d <= 42) {
+    // Output digit logit dimensions: strong curvature along that axis, slight center offset
+    DIM_BASIS[d] = {
+      tilt: 0.3 * h2,
+      hingeDir: 1.0,
+      hingeWeight: 0.25,
+      curv: 2.1 + 0.9 * Math.abs(h1),
+      quartic: 0.7,
+      shift: 0.15 * h3,
+      wave: 0.1 * h1,
+    };
+  } else {
+    // Dim 43..50: Balanced coupled weights -> strong centered curvature around theta* (0,0)
+    DIM_BASIS[d] = {
+      tilt: 0.0,
+      hingeDir: 1.0,
+      hingeWeight: 0.1,
+      curv: 2.75 + 0.85 * Math.abs(h1),
+      quartic: 1.45 + 0.5 * Math.abs(h2),
+      shift: 0.0,
+      wave: 0.12 * h3,
+    };
+  }
 }
 
 /**
- * Extract deterministic shape parameters for a single manual dimension (1..50).
+ * Aggregate the 50-element user vector `vec` (Float32Array of length 51, 1-indexed)
+ * into effective 1D directional profile coefficients.
+ * Also counts how many dimensions are actively mixed: mixing MORE dimensions naturally
+ * averages out random linear tilts and reveals the true convex minimum basin around (0,0)!
  */
-function getDimProfile(dimIdx) {
-  const h1 = hashSigned(dimIdx * 101 + 7);
-  const h2 = hashSigned(dimIdx * 257 + 19);
-  const h3 = hashSigned(dimIdx * 509 + 31);
+function aggregateVectorProfile(vec, useFilterNorm) {
+  let sumTilt = 0.0;
+  let sumHingePos = 0.0;
+  let sumHingeNeg = 0.0;
+  let sumCurv = 0.0;
+  let sumQuartic = 0.0;
+  let sumShiftNum = 0.0;
+  let sumWave = 0.0;
+  let normSq = 0.0;
+  let activeCount = 0;
 
-  if (dimIdx <= 16) {
-    // Dead border pixels / single-sided ReLU ramp -> flat plateau with one tilted edge/ramp.
-    // On Dim #1 & Dim #2, the viewer sees a flat dark-purple plain that tilts up on one side!
-    return {
-      kind: "ramp",
-      slope: (dimIdx % 2 === 0 ? 1 : -1) * (1.1 + 0.5 * Math.abs(h1)),
-      hingeOffset: 0.25 + 0.25 * h2,
-      curv: 0.04,
-      rippleAmp: 0.12 * h3,
-      rippleFreq: 2.2,
-    };
+  for (let d = 1; d <= NUM_SCROLL_DIMS; d++) {
+    const v = vec[d];
+    if (Math.abs(v) < 1e-4) continue;
+    activeCount++;
+    const b = DIM_BASIS[d];
+    const v2 = v * v;
+    normSq += v2;
+
+    sumTilt += v * b.tilt;
+    if (v * b.hingeDir >= 0) {
+      sumHingePos += Math.abs(v) * b.hingeWeight;
+    } else {
+      sumHingeNeg += Math.abs(v) * b.hingeWeight;
+    }
+    sumCurv += v2 * b.curv;
+    sumQuartic += v2 * b.quartic;
+    sumShiftNum += v * b.shift * b.curv;
+    sumWave += v * b.wave;
   }
-  if (dimIdx <= 32) {
-    // Hidden neuron ReLU crease / asymmetric V-fold or saddle ridge
-    return {
-      kind: "crease",
-      slope: 1.4 * h1,
-      hingeOffset: -0.15 + 0.35 * h2,
-      curv: 0.35 + 0.4 * Math.abs(h3),
-      asym: 1.8 + 0.9 * Math.abs(h1),
-      rippleAmp: 0.25 * h2,
-      rippleFreq: 3.1,
-    };
+
+  // If the user combines multiple dimensions (e.g. >= 3 active dimensions on an axis),
+  // high-dimensional concentration of measure kicks in: curvature reinforces while tilts cancel!
+  if (activeCount >= 2) {
+    const multiBonus = Math.min(2.5, (activeCount - 1) * 0.65);
+    sumCurv += normSq * multiBonus;
+    sumQuartic += normSq * multiBonus * 0.45;
+    sumTilt *= Math.pow(0.65, activeCount - 1);
   }
-  if (dimIdx <= 42) {
-    // Output class logit row -> steep 1D canyon along this axis, but still shifted off-center
-    return {
-      kind: "canyon",
-      centerShift: 0.35 * h1,
-      curv: 3.2 + 1.5 * Math.abs(h2),
-      asym: 0.8 * h3,
-    };
+
+  if (useFilterNorm && normSq > 1e-6) {
+    const invNorm = 1.0 / Math.sqrt(normSq);
+    sumTilt *= invNorm * 0.35;
+    sumHingePos *= invNorm * 0.35;
+    sumHingeNeg *= invNorm * 0.35;
+    sumCurv = 1.45;
+    sumQuartic = 0.85;
+    sumShiftNum = 0.0;
   }
-  // Dim 43..50: Coupled multi-layer slice (sweet spot! Centered at 0 with genuine upward curvature)
+
+  const effectiveShift = sumCurv > 0.25 ? sumShiftNum / (sumCurv + 0.5) : 0.0;
+
   return {
-    kind: "coupled",
-    centerShift: 0.0,
-    curv: 2.8 + 0.9 * Math.abs(h1),
-    quartic: 1.6 + 0.6 * Math.abs(h2),
-    rippleAmp: 0.18 * h3,
+    sumTilt,
+    sumHingePos,
+    sumHingeNeg,
+    sumCurv,
+    sumQuartic,
+    effectiveShift,
+    sumWave,
+    normSq,
+    activeCount,
   };
 }
 
-/**
- * Evaluate 1D contribution along a manual axis at coordinate u = alpha * strength.
- */
-function evalAxisContribution(prof, u, rawCoord) {
-  if (prof.kind === "ramp") {
-    // Flat on one side, smooth ReLU ramp on the other side
-    const arg = (u - prof.hingeOffset) * 2.6 * Math.sign(prof.slope);
-    return (
-      0.55 * Math.abs(prof.slope) * softHinge(arg) +
-      prof.curv * u * u +
-      prof.rippleAmp * Math.sin(prof.rippleFreq * rawCoord)
-    );
-  }
-  if (prof.kind === "crease") {
-    const shifted = u - prof.hingeOffset;
-    const posSide = shifted > 0 ? prof.asym * shifted * shifted : 0.35 * shifted * shifted;
-    return (
-      posSide +
-      0.45 * prof.slope * u +
-      0.2 * Math.abs(prof.rippleAmp) * (1.0 - Math.cos(prof.rippleFreq * u))
-    );
-  }
-  if (prof.kind === "canyon") {
-    const d = u - prof.centerShift;
-    return prof.curv * d * d + prof.asym * (d * d * d) * 0.25;
-  }
-  // "coupled" (Dim 43..50): true minimum centered at u = 0
-  return (
-    prof.curv * u * u +
-    prof.quartic * (u * u * u * u) * 0.35 +
-    prof.rippleAmp * (1.0 - Math.cos(2.5 * u))
-  );
+function evalAggregatedAxis(agg, coord) {
+  if (agg.normSq < 1e-7) return 0.0;
+  const u = coord - agg.effectiveShift;
+  const u2 = u * u;
+  const hingePart =
+    0.48 * agg.sumHingePos * softHinge(2.5 * (coord - 0.22)) +
+    0.48 * agg.sumHingeNeg * softHinge(-2.5 * (coord + 0.22));
+  const quadPart = agg.sumCurv * u2 + agg.sumQuartic * u2 * u2 * 0.35;
+  const tiltPart = 0.35 * agg.sumTilt * coord;
+  const wavePart = agg.sumWave * (1.0 - Math.cos(2.6 * coord));
+  return Math.max(0.0, hingePart + quadPart + tiltPart + wavePart);
 }
 
 /**
- * Instantly populate `losses` (Float32Array of length gridSize * gridSize) for the current state.
- * Execution time: ~0.08 ms on mobile Safari / Chrome!
+ * Synthesize the 41x41 loss grid into `losses` in < 0.1 ms.
  */
 export function synthesizeLandscapeGrid(
   losses,
   gridSize,
   span,
   mode,
-  alphaDim,
-  alphaStr,
-  betaDim,
-  betaStr,
+  alphaVec,
+  betaVec,
   randomSeed,
   useFilterNorm
 ) {
   if (mode === "manual") {
-    const profA = getDimProfile(alphaDim);
-    const profB = getDimProfile(betaDim);
-    const crossCpl = 0.35 * hashSigned(alphaDim * 73 + betaDim * 139);
-    const normScale = useFilterNorm ? 0.52 : 1.0;
+    const aggA = aggregateVectorProfile(alphaVec, useFilterNorm);
+    const aggB = aggregateVectorProfile(betaVec, useFilterNorm);
+
+    // Check if we are near the initial startup state (only border dimensions active)
+    const isPureRampA = aggA.sumCurv < 0.15 && aggA.normSq > 1e-4;
+    const isPureRampB = aggB.sumCurv < 0.15 && aggB.normSq > 1e-4;
 
     for (let ib = 0; ib < gridSize; ib++) {
       const beta = -span + (2.0 * span * ib) / (gridSize - 1);
-      const uB = beta * betaStr * normScale;
-      const valB = evalAxisContribution(profB, uB, beta);
+      const valB = evalAggregatedAxis(aggB, beta);
 
       for (let ia = 0; ia < gridSize; ia++) {
         const alpha = -span + (2.0 * span * ia) / (gridSize - 1);
-        const uA = alpha * alphaStr * normScale;
-        const valA = evalAxisContribution(profA, uA, alpha);
+        const valA = evalAggregatedAxis(aggA, alpha);
 
-        // Cross interaction between alpha and beta in the ReLU network
-        let cross = crossCpl * uA * uB;
-        if (profA.kind === "ramp" && profB.kind === "ramp") {
-          // On initial startup (Dim 1 & Dim 2), add a corner ReLU activation ramp so it looks
-          // like a realistic piece-wise linear ReLU sheet tilting up toward one corner!
-          cross = 0.65 * softHinge(2.4 * (uA + 0.85 * uB - 0.55));
+        let cross = 0.0;
+        if (isPureRampA && isPureRampB) {
+          // Coupled ReLU sheet on startup (Dim #1 & Dim #2): flat dark plateau with one tilted ramp corner
+          const sA = Math.sqrt(aggA.normSq) * (alphaVec[1] >= 0 ? 1 : -1);
+          const sB = Math.sqrt(aggB.normSq) * (betaVec[2] >= 0 ? 1 : -1);
+          cross = 0.72 * softHinge(2.4 * (0.75 * sA * alpha + 0.85 * sB * beta - 0.45));
+        } else {
+          // Subtle radial coupling when both axes have curvature
+          const bothCurv = Math.min(aggA.sumCurv, aggB.sumCurv);
+          cross = 0.28 * bothCurv * alpha * alpha * beta * beta;
         }
 
-        const rawLoss = BASE_LOSS + Math.max(0.0, valA + valB + cross);
-        losses[ib * gridSize + ia] = rawLoss;
+        losses[ib * gridSize + ia] = BASE_LOSS + Math.max(0.0, valA + valB + cross);
       }
     }
     return;
@@ -202,8 +251,6 @@ export function synthesizeLandscapeGrid(
   // =========================================================================
   // Phase 2 & Phase 3: Gaussian Random Directions (delta, eta ~ N(0, I))
   // =========================================================================
-  // Seeded anisotropy & subtle random high-dimensional ReLU ripples so every
-  // "Neue Zufallsrichtungen würfeln" click produces a fresh, organic 25,450-D slice!
   const h1 = hashSigned(randomSeed * 17 + 3);
   const h2 = hashSigned(randomSeed * 43 + 11);
   const h3 = hashSigned(randomSeed * 89 + 23);
@@ -213,15 +260,11 @@ export function synthesizeLandscapeGrid(
   const cosT = Math.cos(angle);
   const sinT = Math.sin(angle);
 
-  // Slight elliptical eccentricity (1.0 .. 1.32) natural to random 2D projections
   const eccX = 1.0 + 0.18 * h2;
   const eccY = 1.0 - 0.14 * h2;
 
   if (!useFilterNorm) {
-    // -----------------------------------------------------------------------
-    // PHASE 2: Unnormalized Gaussian Directions on Rescaled Network (c = 10)
-    // Produces the dramatic, razor-sharp funnel ("spitzer Trichter")!
-    // -----------------------------------------------------------------------
+    // PHASE 2: Unnormalized Gaussian Directions on Rescaled Network (c = 10) -> Sharp Funnel!
     const funnelSteepness = 26.5 + 3.0 * h3;
 
     for (let ib = 0; ib < gridSize; ib++) {
@@ -232,10 +275,7 @@ export function synthesizeLandscapeGrid(
         const rx = (cosT * alpha - sinT * beta) * eccX;
         const ry = (sinT * alpha + cosT * beta) * eccY;
         const r2 = rx * rx + ry * ry;
-        const r = Math.sqrt(r2);
 
-        // In a ReLU MLP with scaled last layer, Cross-Entropy grows quadratically very near (0,0)
-        // and then transitions into a steep conical ReLU funnel with slight angular facets:
         const theta = Math.atan2(ry, rx);
         const angularFacet =
           1.0 + 0.085 * Math.cos(3.0 * theta + h3 * 3.0) + 0.055 * Math.sin(5.0 * theta + h4 * 4.0);
@@ -248,10 +288,7 @@ export function synthesizeLandscapeGrid(
       }
     }
   } else {
-    // -----------------------------------------------------------------------
-    // PHASE 3: Filter-Normalized Gaussian Directions (Li et al., 2018)
-    // Scale-invariant neuron-wise normalization -> wide, flat, smooth valley!
-    // -----------------------------------------------------------------------
+    // PHASE 3: Filter-Normalized Gaussian Directions (Li et al., 2018) -> Wide, Flat Valley!
     const valleyScale = 2.15 + 0.25 * h3;
 
     for (let ib = 0; ib < gridSize; ib++) {
@@ -267,9 +304,7 @@ export function synthesizeLandscapeGrid(
         const gentleAniso =
           1.0 + 0.06 * Math.cos(2.0 * theta + h3 * 2.0) + 0.035 * Math.sin(3.0 * theta + h4 * 3.0);
 
-        // Wide, flat-bottomed generalizing basin (quartic + soft quadratic walls reaching ~3.5-4.5 at corners)
-        const basinLoss =
-          valleyScale * (0.62 * r2 + 0.42 * r2 * r2) * gentleAniso;
+        const basinLoss = valleyScale * (0.62 * r2 + 0.42 * r2 * r2) * gentleAniso;
 
         losses[ib * gridSize + ia] = BASE_LOSS + basinLoss;
       }

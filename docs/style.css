@@ -223,13 +223,90 @@ body {
 }
 
 .compute-badge {
-  background: rgba(56, 189, 248, 0.2);
-  border: 1px solid var(--accent-blue);
-  color: var(--accent-blue);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid var(--border-subtle);
+  color: #cbd5e1;
   font-size: 0.72rem;
   font-weight: 600;
-  padding: 3px 9px;
+  padding: 4px 10px;
   border-radius: 99px;
+  transition: all 0.15s ease;
+}
+
+.compute-badge.updating {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: var(--accent-blue);
+  color: #ffffff;
+}
+
+.compute-badge.inspecting {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: var(--accent-amber);
+  color: #fde68a;
+}
+
+.spinner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+}
+
+.compute-badge.updating .spinner-dot {
+  background: transparent;
+  border: 2px solid var(--accent-blue);
+  border-top-color: transparent;
+  animation: spin 0.55s linear infinite;
+}
+
+.compute-badge.inspecting .spinner-dot {
+  background: var(--accent-amber);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.status-ready {
+  color: var(--accent-emerald);
+}
+
+.btn-reset-mini {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.axis-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dim-pill-alpha,
+.dim-pill-beta {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 99px;
+}
+
+.dim-pill-alpha {
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent-blue);
+}
+
+.dim-pill-beta {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-amber);
 }
 
 /* Phase 2 Banner */

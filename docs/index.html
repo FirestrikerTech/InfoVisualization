@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>3D Loss-Landschaft | Live-Demo (MNIST)</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="modulepreload" href="js/app.js" />
+  <link rel="modulepreload" href="js/directions.js" />
+  <link rel="modulepreload" href="js/plot.js" />
 </head>
 <body>
   <div class="app-shell">
@@ -29,12 +32,12 @@
           <span id="valTestAcc" class="metric-value">95.8%</span>
         </div>
         <div class="metric-pill">
-          <span class="metric-label">Unterraum</span>
-          <span class="metric-value">2 / 25.450 D</span>
+          <span class="metric-label">Aktive Dims</span>
+          <span id="valActiveDims" class="metric-value">2 / 50</span>
         </div>
         <div class="metric-pill">
-          <span class="metric-label">Rechenzeit</span>
-          <span id="valTimeMs" class="metric-value">– ms</span>
+          <span class="metric-label">Status</span>
+          <span id="valTimeMs" class="metric-value status-ready">Bereit ✓</span>
         </div>
       </div>
     </header>
@@ -53,13 +56,16 @@
         <button id="btnLogScale" class="pill-toggle">Log-Skala</button>
       </div>
 
-      <!-- Legend & Compute Indicator -->
+      <!-- Legend & Live Activity / Loading Indicator -->
       <div class="viewport-footer">
         <div class="legend-item">
           <span class="dot-pin"></span>
           <span>Zentrum θ* (0, 0)</span>
         </div>
-        <div id="computeBadge" class="compute-badge hidden">Berechne…</div>
+        <div id="computeBadge" class="compute-badge">
+          <span id="computeSpinner" class="spinner-dot"></span>
+          <span id="computeText">Bereit</span>
+        </div>
       </div>
     </main>
 
@@ -86,56 +92,64 @@
           <button id="tabManual" class="tab-btn active">1. Manuelle Richtungen</button>
           <button id="tabRandom" class="tab-btn hidden">2. Gauß-Zufallsrichtungen</button>
         </div>
-        <span id="modeStatusBadge" class="status-tag">Manueller Schnitt</span>
+        <button id="btnResetVectors" class="btn-reset-mini" title="Alle Dimensionen zurücksetzen">Reset</button>
       </div>
 
       <!-- Manual 4-Slider View (Phase 1) -->
       <div id="panelManual" class="control-body">
         <p class="helper-note">
-          Du stehst im Punkt <strong>θ*</strong>. Scrolle für jede Achse durch die Dimensionen des Parameterraums und justiere deren Stärke – findest du das Minimum?
+          <strong>So funktioniert’s:</strong> Regler 1 &amp; 3 wählen nur die Dimension aus (verändert den Plot noch nicht). Erst mit Regler 2 &amp; 4 änderst du den gespeicherten Wert dieser Dimension!
         </p>
 
         <div class="four-sliders-grid">
-          <!-- Axis Alpha (Direction delta) -->
+          <!-- Axis Alpha (Direction vector delta) -->
           <div class="axis-card axis-card-alpha">
-            <div class="axis-card-title">Achse α (Richtung δ)</div>
+            <div class="axis-card-header">
+              <span class="axis-card-title">Achse α (Richtungsvektor δ)</span>
+              <span id="badgeAlphaNonZero" class="dim-pill-alpha">1 Dim aktiv</span>
+            </div>
 
             <div class="slider-block">
               <div class="slider-head">
-                <span>1. Durch Dimensionen scrollen</span>
+                <span>1. Durch Dimensionen scrollen (Auswahl)</span>
                 <strong id="lblAlphaDim" class="val-alpha">Dim #1</strong>
               </div>
-              <div id="descAlphaDim" class="slider-sub">Dim #1 · Eingabepixel-Block 1/16</div>
+              <div id="descAlphaDim" class="slider-sub">Dim #1 · Randpixel-Gewicht 1/16 (Schicht 1)</div>
               <input id="rngAlphaDim" type="range" min="1" max="50" step="1" value="1" class="range-alpha" />
             </div>
 
             <div class="slider-block">
               <div class="slider-head">
-                <span>2. Stärke in dieser Dimension</span>
+                <span id="lblAlphaStrTitle">2. Gespeicherter Wert für Dim #1</span>
                 <strong id="lblAlphaStr" class="val-alpha">+1.00</strong>
               </div>
+              <div class="slider-sub">Ändert δ[1] und aktualisiert sofort die 3D-Landschaft</div>
               <input id="rngAlphaStr" type="range" min="-2.0" max="2.0" step="0.05" value="1.0" class="range-alpha" />
             </div>
           </div>
 
-          <!-- Axis Beta (Direction eta) -->
+          <!-- Axis Beta (Direction vector eta) -->
           <div class="axis-card axis-card-beta">
-            <div class="axis-card-title">Achse β (Richtung η)</div>
+            <div class="axis-card-header">
+              <span class="axis-card-title">Achse β (Richtungsvektor η)</span>
+              <span id="badgeBetaNonZero" class="dim-pill-beta">1 Dim aktiv</span>
+            </div>
 
             <div class="slider-block">
               <div class="slider-head">
-                <span>3. Durch Dimensionen scrollen</span>
+                <span>3. Durch Dimensionen scrollen (Auswahl)</span>
                 <strong id="lblBetaDim" class="val-beta">Dim #2</strong>
               </div>
-              <div id="descBetaDim" class="slider-sub">Dim #2 · Eingabepixel-Block 2/16</div>
+              <div id="descBetaDim" class="slider-sub">Dim #2 · Randpixel-Gewicht 2/16 (Schicht 1)</div>
               <input id="rngBetaDim" type="range" min="1" max="50" step="1" value="2" class="range-beta" />
             </div>
 
             <div class="slider-block">
               <div class="slider-head">
-                <span>4. Stärke in dieser Dimension</span>
+                <span id="lblBetaStrTitle">4. Gespeicherter Wert für Dim #2</span>
                 <strong id="lblBetaStr" class="val-beta">+1.00</strong>
               </div>
+              <div class="slider-sub">Ändert η[2] und aktualisiert sofort die 3D-Landschaft</div>
               <input id="rngBetaStr" type="range" min="-2.0" max="2.0" step="0.05" value="1.0" class="range-beta" />
             </div>
           </div>
