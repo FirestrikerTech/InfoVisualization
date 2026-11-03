@@ -1,0 +1,42 @@
+{
+  "architecture": [
+    784,
+    32,
+    10
+  ],
+  "num_params": 25450,
+  "num_samples": 500,
+  "scale_factor_c": 10.0,
+  "sigma_unnorm": 0.085,
+  "unlock_random_seconds": 150,
+  "offsets": {
+    "W1": [
+      0,
+      25088
+    ],
+    "b1": [
+      25088,
+      25120
+    ],
+    "W2": [
+      25120,
+      25440
+    ],
+    "b2": [
+      25440,
+      25450
+    ]
+  },
+  "metrics": {
+    "subset_train_loss": 0.128203,
+    "subset_train_acc": 0.96,
+    "full_train_loss": 0.1193,
+    "full_train_acc": 0.9659,
+    "full_test_loss": 0.1371,
+    "full_test_acc": 0.9582
+  },
+  "verification": {
+    "center_loss": 0.1282031238079071,
+    "center_acc": 0.9599999785423279
+  }
+}

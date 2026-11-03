@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>3D Loss-Landschaft | Live-Demo (MNIST)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header & Status Bar -->
+    <header class="top-bar">
+      <div class="brand-row">
+        <div>
+          <h1 class="app-title">Loss-Landschaft Explorer</h1>
+          <p class="app-subtitle">MNIST MLP (784 → 32 → 10) · 25.450 Dimensionen → 2D-Schnitt</p>
+        </div>
+        <button id="btnInfo" class="icon-btn" title="Info &amp; QR-Code" aria-label="Info &amp; QR-Code">?</button>
+      </div>
+
+      <div class="metrics-strip">
+        <!-- Long-press (3s) on this Loss pill unlocks the secret Filter Normalization toggle -->
+        <div id="secretTrigger" class="metric-pill" title="Loss im Zentrum θ* (α=0, β=0)">
+          <span class="metric-label">Loss L(θ*)</span>
+          <span id="valCenterLoss" class="metric-value">0.128</span>
+        </div>
+        <div class="metric-pill">
+          <span class="metric-label">Test-Acc</span>
+          <span id="valTestAcc" class="metric-value">95.8%</span>
+        </div>
+        <div class="metric-pill">
+          <span class="metric-label">Unterraum</span>
+          <span class="metric-value">2 / 25.450 D</span>
+        </div>
+        <div class="metric-pill">
+          <span class="metric-label">Rechenzeit</span>
+          <span id="valTimeMs" class="metric-value">– ms</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 3D / 2D Viewport -->
+    <main class="viewport-panel">
+      <div id="plot3D" class="plot-container"></div>
+      <canvas id="plot2D" class="plot-canvas-2d" style="display: none;"></canvas>
+
+      <!-- Floating Plot Controls -->
+      <div class="viewport-Controls-top">
+        <div class="seg-group">
+          <button id="btnView3D" class="seg-btn active">3D-Fläche</button>
+          <button id="btnView2D" class="seg-btn">2D-Höhenlinien</button>
+        </div>
+        <button id="btnLogScale" class="pill-toggle">Log-Skala</button>
+      </div>
+
+      <!-- Legend & Compute Indicator -->
+      <div class="viewport-footer">
+        <div class="legend-item">
+          <span class="dot-pin"></span>
+          <span>Trainiertes Minimum θ* (0, 0)</span>
+        </div>
+        <div id="computeBadge" class="compute-badge hidden">Berechne…</div>
+      </div>
+    </main>
+
+    <!-- Phase 2 Banner (Appears after ~2.5 min or in presenter mode) -->
+    <section id="randomPhaseBanner" class="phase-banner hidden">
+      <div class="banner-content">
+        <div class="banner-text">
+          <strong>Hochdimensionaler Raum freigeschaltet!</strong>
+          <span>Statt einzelner Bildebenen: Wähle isotrope Zufallsrichtungen δ, η ~ N(0, I) in allen 25.450 Dimensionen.</span>
+        </div>
+        <div class="banner-actions">
+          <button id="btnRollGaussian" class="btn-primary-glow">🎲 Gauß-Zufallsrichtungen erzeugen</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Secret Phase 3 Panel (Constructed dynamically at runtime on 3s long-press or #presenter) -->
+    <section id="secretContainer" class="secret-panel hidden"></section>
+
+    <!-- Bottom Interactive Controls Panel -->
+    <section class="controls-card">
+      <div class="controls-header">
+        <div class="mode-tabs">
+          <button id="tabManual" class="tab-btn active">1. Richtungs-Mixer (Manuell)</button>
+          <button id="tabRandom" class="tab-btn hidden">2. Gauß-Richtungen</button>
+        </div>
+        <span id="modeStatusBadge" class="status-tag">Manueller Schnitt</span>
+      </div>
+
+      <!-- Manual Mixer View (Phase 1) -->
+      <div id="panelManual" class="control-body">
+        <p class="helper-note">
+          Du stehst fest im trainierten Minimum <strong>θ*</strong>. Mische die Grundrichtungen für Achse <strong>α (δ)</strong> und Achse <strong>β (η)</strong>, um den 25.450-dimensionalen Raum aufzuspannen:
+        </p>
+
+        <!-- Axis selector for mobile compactness -->
+        <div class="axis-selector-row">
+          <button id="btnEditAlpha" class="axis-tab active-alpha">Achse α (Richtung δ) bearbeiten</button>
+          <button id="btnEditBeta" class="axis-tab">Achse β (Richtung η) bearbeiten</button>
+        </div>
+
+        <div id="slidersContainer" class="sliders-list"></div>
+
+        <!-- Plane Rotation & Span Sliders -->
+        <div class="fine-tune-grid">
+          <div class="slider-block">
+            <div class="slider-head">
+              <span>Drehwinkel in der (δ, η)-Ebene</span>
+              <strong id="lblAngle">0°</strong>
+            </div>
+            <input id="rngAngle" type="range" min="-180" max="180" step="5" value="0" />
+          </div>
+
+          <div class="slider-block">
+            <div class="slider-head">
+              <span>Zoom / Bereich α, β ∈ [-s, +s]</span>
+              <strong id="lblSpan">±1.0</strong>
+            </div>
+            <input id="rngSpan" type="range" min="0.3" max="2.0" step="0.1" value="1.0" />
+          </div>
+        </div>
+
+        <div class="preset-row">
+          <button id="btnResetManual" class="btn-secondary">Standard-Mix</button>
+          <button id="btnHintValley" class="btn-secondary" title="Kombination aus beiden Schichten + Rotation">Tipp: Schichten koppeln</button>
+        </div>
+      </div>
+
+      <!-- Random Gaussian View (Phase 2 & 3) -->
+      <div id="panelRandom" class="control-body hidden">
+        <p class="helper-note">
+          <strong>Gaußsche Zufallsrichtungen (Li et al., 2018):</strong> Jedes der 25.450 Gewichte wird unabhängig gemäß <code>N(0, 1)</code> gestört.
+        </p>
+        <div class="random-controls-row">
+          <button id="btnRerollSeed" class="btn-primary-glow">🎲 Neue Zufallsrichtungen würfeln</button>
+          <span id="lblSeedInfo" class="seed-badge">Seed #2026</span>
+        </div>
+        <div class="fine-tune-grid" style="margin-top: 10px;">
+          <div class="slider-block">
+            <div class="slider-head">
+              <span>Zoom / Bereich α, β ∈ [-s, +s]</span>
+              <strong id="lblSpanRandom">±1.0</strong>
+            </div>
+            <input id="rngSpanRandom" type="range" min="0.3" max="2.0" step="0.1" value="1.0" />
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Info & QR Modal -->
+  <div id="modalInfo" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Über diese Live-Demo</h2>
+        <button id="btnCloseModal" class="icon-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <p>
+          Diese interaktive Demo berechnet <strong>live auf deinem Smartphone</strong> echte 3D-Loss-Landschaften
+          eines auf MNIST trainierten Neuronalen Netzes (<code>784 → 32 → 10</code>, 25.450 Parameter) über 500 Bilder:
+        </p>
+        <p class="formula-box">
+          f(α, β) = L(θ* + α · δ + β · η)
+        </p>
+        <p>
+          Nach dem Paper <em>„Visualizing the Loss Landscape of Neural Nets“</em> (Li et al., NeurIPS 2018).
+        </p>
+        <div class="qr-box">
+          <img src="qr.png" alt="QR-Code zur Live-Demo" class="qr-img" />
+          <span>QR-Code zum Teilen mit Zuhörern</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
