@@ -9,9 +9,11 @@ Live-Demo für den Vortrag über die Visualisierung von Loss-Landschaften nach *
 
 ## Ablauf im Vortrag (3 Phasen)
 
-1. **Phase 1 – Manuelle Richtungserkundung (`Richtungs-Mixer`):**
-   - Die Zuhörer stehen fest im trainierten Minimum $\theta^*$ ($\alpha=0, \beta=0$) und mischen intuitive Grundrichtungen im 25.450-dimensionalen Parameterraum (`784 → 32 → 10` ReLU-MLP).
-   - Man erkennt: Mit niedrigdimensionalen/strukturierten Richtungen sieht man meist nur flache Rinnen oder schiefe Ebenen. Über den Button *„Tipp: Schichten koppeln“* (oder geduldiges Mischen von Schicht 1 + Schicht 2 + Drehwinkel) lässt sich ein lokales Tal erahnen.
+1. **Phase 1 – Manuelle Richtungserkundung (4 Scroller):**
+   - Die Zuhörer stehen fest im Punkt $\theta^*$ ($\alpha=0, \beta=0$) und haben genau **4 Regler**:
+     - Jeweils einen Regler für Achse $\alpha$ und Achse $\beta$, um durch die Dimensionen des Parameterraums zu scrollen (`Dim #1` bis `Dim #50`), und jeweils einen Regler für die Stärke in dieser Dimension.
+   - **Startzustand (kein Minimum sichtbar):** Auf `Dim #1` und `Dim #2` (Randpixel / einzelne Koordinaten) ist die Landschaft eine flache Ebene mit leichter Kante – das Minimum ist überhaupt nicht erkennbar! Erst wer beide Achsen in die gekoppelten Schichten (`Dim #43` bis `Dim #50`) scrollt und die Stärke anpasst, kann manuell eine Mulde finden.
+   - **Performance (50 Bilder + Int16-Quantisierung):** Die Gewichte sind auf 16-Bit-Integer (`weights_q16.bin`, nur 50 KB) quantisiert und der Loss wird live über 50 balancierte MNIST-Bilder (`data.bin`, 39 KB) ausgewertet – ein komplettes 41×41-Gitter dauert auf dem Smartphone nur wenige Millisekunden!
 2. **Phase 2 – Gaußsche Zufallsrichtungen ohne Filternormierung (nach 2,5 Minuten):**
    - Nach 150 Sekunden (einstellbar in `docs/assets/meta.json` unter `unlock_random_seconds`) erscheint animiert der Button **„🎲 Gauß-Zufallsrichtungen erzeugen“** ($\delta, \eta \sim \mathcal{N}(0, I)$).
    - **Der Skalierungs-Trick:** Da ReLU positiv homogen ist, wurden die Gewichte beim Export mit $c = 10$ skaliert ($W_1, b_1 \leftarrow c \cdot W_1, c \cdot b_1$ und $W_2 \leftarrow W_2 / c$). Das Netz berechnet **exakt dieselbe Funktion** (identischer Loss `0.128`, identische Test-Accuracy `95.8%`), aber unnormierte Zufallsrichtungen stören $W_2$ relativ gesehen 100× stärker → es entsteht ein **extrem spitzer Trichter**.

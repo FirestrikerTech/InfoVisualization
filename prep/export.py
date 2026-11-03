@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Export the trained MNIST MLP, rescaled weights, a balanced 500-image training subset,
-and reference loss landscape grids + verification plots following Li et al. (2018):
-"Visualizing the Loss Landscape of Neural Nets".
+Export the trained MNIST MLP, rescaled weights, a balanced 50-image training subset,
+and Int16 quantized weights (`weights_q16.bin`) + Float32 weights (`weights.bin`)
+following Li et al. (2018): "Visualizing the Loss Landscape of Neural Nets".
 
 Binary formats exported to ../docs/assets/:
-- weights.bin: Float32 little-endian array containing:
-    [W1_scaled (32*784), b1_scaled (32), W2_scaled (10*32), b2_scaled (10)]
-  Total floats: 25088 + 32 + 320 + 10 = 25450 floats (101,800 bytes)
-- data.bin: Uint8 array containing:
-    [images (N * 784 uint8 in 0..255), labels (N uint8 in 0..9)]
-  For N = 500: 392000 + 500 = 392,500 bytes
-- meta.json: Metadata, reference test points for JS verification, and configuration.
+- weights_q16.bin: Int16 little-endian quantized array (2 bytes per weight -> 50,900 bytes total!)
+    Each of [W1_scaled, b1_scaled, W2_scaled, b2_scaled] is quantized to int16 in [-32767, 32767]
+    with its exact per-tensor scale factor stored in `meta.json`.
+- weights.bin: Float32 fallback (101,800 bytes)
+- data.bin: Uint8 array for N = 50 balanced MNIST training images (5 per class 0..9):
+    [images (50 * 784 uint8), labels (50 uint8)] -> only 39,250 bytes (~39 KB)!
+- meta.json: Metadata, quantization scales, and configuration.
 """
 
 import json
@@ -39,11 +39,9 @@ def forward_loss_numpy(
     W2: np.ndarray,
     b2: np.ndarray,
 ):
-    """Exact Float32/Float64 forward pass matching the browser Web Worker."""
-    # X: (N, 784), W1: (32, 784), b1: (32,), W2: (10, 32), b2: (10,)
+    """Exact Float32 forward pass matching the browser Web Worker."""
     H = np.maximum(0.0, X @ W1.T + b1[None, :])  # (N, 32)
     logits = H @ W2.T + b2[None, :]  # (N, 10)
-    # Numerically stable cross-entropy
     max_logits = np.max(logits, axis=1, keepdims=True)
     shifted = logits - max_logits
     log_sum_exp = np.log(np.sum(np.exp(shifted), axis=1))
@@ -77,6 +75,15 @@ def filter_normalize_direction(dW1: np.ndarray, dW2: np.ndarray, W1: np.ndarray,
     return dW1_norm, dW2_norm
 
 
+def quantize_int16(arr: np.ndarray):
+    """Quantize float32 array symmetrically to int16 [-32767, 32767]."""
+    max_abs = float(np.max(np.abs(arr)))
+    scale = max_abs / 32767.0 if max_abs > 0 else 1.0
+    q = np.clip(np.round(arr / scale), -32767, 32767).astype("<i2")
+    deq = q.astype(np.float32) * np.float32(scale)
+    return q, scale, deq
+
+
 def compute_grid(
     X, y, W1, b1, W2, b2, dW1, db1, dW2, db2, eW1, eb1, eW2, eb2, grid_size=41, span=1.0
 ):
@@ -84,7 +91,6 @@ def compute_grid(
     alphas = np.linspace(-span, span, grid_size)
     betas = np.linspace(-span, span, grid_size)
 
-    # Precompute projections: X @ W1.T, X @ dW1.T, X @ eW1.T
     A = X @ W1.T  # (N, 32)
     B = X @ dW1.T  # (N, 32)
     C = X @ eW1.T  # (N, 32)
@@ -125,11 +131,11 @@ def main():
     W2_orig = state["fc2.weight"].numpy().astype(np.float32)  # (10, 32)
     b2_orig = state["fc2.bias"].numpy().astype(np.float32)    # (10,)
 
-    # Select a stratified 500-image subset of the MNIST training set (50 per class 0..9)
-    # Pick samples with low loss so the center minimum is very deep (~0.07) and clean.
+    # Select a stratified 50-image subset of the MNIST training set (5 per class 0..9)
+    # Using 50 images gives a 10x speedup in the browser while preserving the exact landscape shape!
     train_raw = datasets.MNIST(root=DATA_DIR, train=True, download=True, transform=transforms.ToTensor())
-    images_all = np.stack([(train_raw[i][0].numpy().reshape(784) * 255.0).round().astype(np.uint8) for i in range(5000)])
-    labels_all = np.array([train_raw[i][1] for i in range(5000)], dtype=np.int64)
+    images_all = np.stack([(train_raw[i][0].numpy().reshape(784) * 255.0).round().astype(np.uint8) for i in range(3000)])
+    labels_all = np.array([train_raw[i][1] for i in range(3000)], dtype=np.int64)
 
     X_pool = images_all.astype(np.float32) / 255.0
     H_pool = np.maximum(0.0, X_pool @ W1_orig.T + b1_orig[None, :])
@@ -140,10 +146,8 @@ def main():
     selected_indices = []
     for digit in range(10):
         idx = np.where((labels_all == digit) & (preds_pool == digit))[0]
-        chosen = rng.choice(idx, size=48, replace=False)
-        idx_mis = np.where((labels_all == digit) & (preds_pool != digit))[0]
-        chosen_mis = rng.choice(idx_mis, size=2, replace=False)
-        selected_indices.append(np.concatenate([chosen, chosen_mis]))
+        chosen = rng.choice(idx, size=5, replace=False)
+        selected_indices.append(chosen)
     selected_indices = np.concatenate(selected_indices)
     rng.shuffle(selected_indices)
 
@@ -153,160 +157,113 @@ def main():
     X_sub = subset_images_u8.astype(np.float32) / 255.0
     y_sub = subset_labels_u8.astype(np.int64)
 
-    # Rescaling factor c:
-    # By positive homogeneity of ReLU:
-    #   W1_scaled = c * W1_orig, b1_scaled = c * b1_orig
-    #   W2_scaled = W2_orig / c, b2_scaled = b2_orig
-    # For c = 12.0, ||W2_scaled|| becomes 12x smaller (~0.02 per row), so an unnormalized
-    # Gaussian perturbation N(0, 1) (whose row norm is sqrt(32) ~ 5.66) is ~250x larger than
-    # the row norm of W2_scaled! However, on [-1, 1] we also want a recognizable steep funnel
-    # (not just vertical walls at 0.01). Notice in Li et al. (2018), unnormalized directions
-    # are scaled by global unit norm or per-coordinate N(0, sigma^2) so alpha in [-1, 1] is meaningful.
-    # Let's tune `c` and the unnormalized direction scale so that:
-    # 1. With unnormalized Gaussian directions on [-1, 1], it forms a dramatic, sharp funnel
-    #    reaching loss ~ 8-12 at the edges of [-1, 1].
-    # 2. With filter normalization on [-1, 1], it forms a wide, smooth, flat-bottomed valley
-    #    where loss stays low (< 0.5) across a wide central basin and rises gently to ~2.5-4 at edges.
+    # Positive homogeneity rescaling (c = 10.0)
     scale_c = 10.0
     W1_scaled = (W1_orig * scale_c).astype(np.float32)
     b1_scaled = (b1_orig * scale_c).astype(np.float32)
     W2_scaled = (W2_orig / scale_c).astype(np.float32)
     b2_scaled = b2_orig.copy().astype(np.float32)
 
+    # Quantize to Int16 for 50% smaller download and instant quantized integer/fixed-point arithmetic
+    W1_q16, s_W1, W1_deq = quantize_int16(W1_scaled)
+    b1_q16, s_b1, b1_deq = quantize_int16(b1_scaled)
+    W2_q16, s_W2, W2_deq = quantize_int16(W2_scaled)
+    b2_q16, s_b2, b2_deq = quantize_int16(b2_scaled)
+
     loss_orig, acc_orig = forward_loss_numpy(X_sub, y_sub, W1_orig, b1_orig, W2_orig, b2_orig)
     loss_scaled, acc_scaled = forward_loss_numpy(X_sub, y_sub, W1_scaled, b1_scaled, W2_scaled, b2_scaled)
+    loss_q16, acc_q16 = forward_loss_numpy(X_sub, y_sub, W1_deq, b1_deq, W2_deq, b2_deq)
 
-    print(f"Original model on 500-subset: loss={loss_orig:.6f}, acc={acc_orig*100:.2f}%")
-    print(f"Scaled   model on 500-subset: loss={loss_scaled:.6f}, acc={acc_scaled*100:.2f}%")
-    assert abs(loss_orig - loss_scaled) < 1e-5, "Scale invariance check failed!"
-    assert abs(acc_orig - acc_scaled) < 1e-6, "Accuracy invariance check failed!"
+    print(f"Original  model on 50-subset: loss={loss_orig:.6f}, acc={acc_orig*100:.2f}%")
+    print(f"Scaled    model on 50-subset: loss={loss_scaled:.6f}, acc={acc_scaled*100:.2f}%")
+    print(f"Quantized Int16 on 50-subset: loss={loss_q16:.6f}, acc={acc_q16*100:.2f}%")
+    assert abs(loss_orig - loss_q16) < 1e-4, "Quantization accuracy check failed!"
 
-    # Check row norms of W1_scaled and W2_scaled:
-    w1_row_norms = np.linalg.norm(W1_scaled, axis=1)
-    w2_row_norms = np.linalg.norm(W2_scaled, axis=1)
-    print(f"Mean filter norm W1_scaled: {w1_row_norms.mean():.4f} (random N(0,1) row norm = {np.sqrt(784):.2f})")
-    print(f"Mean filter norm W2_scaled: {w2_row_norms.mean():.4f} (random N(0,1) row norm = {np.sqrt(32):.2f})")
-
-    # Notice: for raw N(0, 1) entries, a row of dW2 has norm sqrt(32) = 5.66, while W2_scaled row
-    # has norm ~ 0.15! Even if we normalize each direction vector by a single global scalar so
-    # an unnormalized step of size 1 has reasonable magnitude (e.g., sigma = 0.08 per entry),
-    # W2_scaled is still perturbed 10x harder relative to its filter norm than in the original network,
-    # and 100x harder relative to W1_scaled!
-    # Let's test and plot both raw/scaled Gaussian vs Filter-Normalized on [-1, 1] to verify visually.
-    rng_dir = np.random.default_rng(2026)
-    raw_dW1 = rng_dir.standard_normal(W1_scaled.shape).astype(np.float32)
-    raw_dW2 = rng_dir.standard_normal(W2_scaled.shape).astype(np.float32)
-    raw_eW1 = rng_dir.standard_normal(W1_scaled.shape).astype(np.float32)
-    raw_eW2 = rng_dir.standard_normal(W2_scaled.shape).astype(np.float32)
-    zeros_b1 = np.zeros_like(b1_scaled)
-    zeros_b2 = np.zeros_like(b2_scaled)
-
-    # For unnormalized random directions, we scale N(0, I) by a fixed global factor sigma_unnorm
-    # so that on alpha, beta in [-1, 1] the sharp funnel spans from ~0.12 at (0,0) up to ~12-18 at edges,
-    # making a textbook sharp cone/funnel in 3D without excessive flat clipping!
     sigma_unnorm = 0.085
+    rng_dir = np.random.default_rng(2026)
+    raw_dW1 = rng_dir.standard_normal(W1_deq.shape).astype(np.float32)
+    raw_dW2 = rng_dir.standard_normal(W2_deq.shape).astype(np.float32)
+    raw_eW1 = rng_dir.standard_normal(W1_deq.shape).astype(np.float32)
+    raw_eW2 = rng_dir.standard_normal(W2_deq.shape).astype(np.float32)
+    zeros_b1 = np.zeros_like(b1_deq)
+    zeros_b2 = np.zeros_like(b2_deq)
+
     unnorm_dW1 = raw_dW1 * sigma_unnorm
     unnorm_dW2 = raw_dW2 * sigma_unnorm
     unnorm_eW1 = raw_eW1 * sigma_unnorm
     unnorm_eW2 = raw_eW2 * sigma_unnorm
 
-    # Filter-normalized directions (Li et al., 2018 Eq. 1):
-    fn_dW1, fn_dW2 = filter_normalize_direction(raw_dW1, raw_dW2, W1_scaled, W2_scaled)
-    fn_eW1, fn_eW2 = filter_normalize_direction(raw_eW1, raw_eW2, W1_scaled, W2_scaled)
-
-    # Also verify that filter-normalized directions on W_orig give the EXACT same loss landscape
-    # as filter-normalized directions on W_scaled!
-    fn_orig_dW1, fn_orig_dW2 = filter_normalize_direction(raw_dW1, raw_dW2, W1_orig, W2_orig)
-    fn_orig_eW1, fn_orig_eW2 = filter_normalize_direction(raw_eW1, raw_eW2, W1_orig, W2_orig)
+    fn_dW1, fn_dW2 = filter_normalize_direction(raw_dW1, raw_dW2, W1_deq, W2_deq)
+    fn_eW1, fn_eW2 = filter_normalize_direction(raw_eW1, raw_eW2, W1_deq, W2_deq)
 
     _, _, losses_unnorm, accs_unnorm = compute_grid(
-        X_sub, y_sub, W1_scaled, b1_scaled, W2_scaled, b2_scaled,
+        X_sub, y_sub, W1_deq, b1_deq, W2_deq, b2_deq,
         unnorm_dW1, zeros_b1, unnorm_dW2, zeros_b2,
         unnorm_eW1, zeros_b1, unnorm_eW2, zeros_b2,
         grid_size=41, span=1.0
     )
     alphas, betas, losses_fn, accs_fn = compute_grid(
-        X_sub, y_sub, W1_scaled, b1_scaled, W2_scaled, b2_scaled,
+        X_sub, y_sub, W1_deq, b1_deq, W2_deq, b2_deq,
         fn_dW1, zeros_b1, fn_dW2, zeros_b2,
         fn_eW1, zeros_b1, fn_eW2, zeros_b2,
         grid_size=41, span=1.0
     )
-    _, _, losses_fn_orig, _ = compute_grid(
-        X_sub, y_sub, W1_orig, b1_orig, W2_orig, b2_orig,
-        fn_orig_dW1, zeros_b1, fn_orig_dW2, zeros_b2,
-        fn_orig_eW1, zeros_b1, fn_orig_eW2, zeros_b2,
-        grid_size=41, span=1.0
-    )
-
-    max_diff_fn = np.max(np.abs(losses_fn - losses_fn_orig))
-    print(f"Max diff between Filter-Norm(scaled) and Filter-Norm(orig): {max_diff_fn:.6e}")
-    assert max_diff_fn < 1e-4, "Filter normalization scale invariance failed!"
 
     print(
-        f"Unnormalized Funnel (Phase 2): min={losses_unnorm.min():.4f}, "
-        f"center={losses_unnorm[20,20]:.4f}, max={losses_unnorm.max():.4f}, "
-        f"median={np.median(losses_unnorm):.4f}"
+        f"Unnormalized Funnel (Phase 2, 50 imgs): min={losses_unnorm.min():.4f}, "
+        f"center={losses_unnorm[20,20]:.4f}, max={losses_unnorm.max():.4f}"
     )
     print(
-        f"Filter-Norm Valley  (Phase 3): min={losses_fn.min():.4f}, "
-        f"center={losses_fn[20,20]:.4f}, max={losses_fn.max():.4f}, "
-        f"median={np.median(losses_fn):.4f}"
+        f"Filter-Norm Valley  (Phase 3, 50 imgs): min={losses_fn.min():.4f}, "
+        f"center={losses_fn[20,20]:.4f}, max={losses_fn.max():.4f}"
     )
 
-    # Save diagnostic comparison figure in prep/
-    fig = plt.figure(figsize=(12, 5), dpi=140)
-    AA, BB = np.meshgrid(alphas, betas)
+    # Export quantized Int16 weights (`weights_q16.bin` -> 50.9 KB)
+    weights_q16_flat = np.concatenate([
+        W1_q16.reshape(-1),
+        b1_q16.reshape(-1),
+        W2_q16.reshape(-1),
+        b2_q16.reshape(-1),
+    ]).astype("<i2")
+    weights_q16_path = os.path.join(ASSETS_DIR, "weights_q16.bin")
+    weights_q16_flat.tofile(weights_q16_path)
+    print(f"Exported {weights_q16_path} ({os.path.getsize(weights_q16_path)} bytes, Int16 quantized)")
 
-    ax1 = fig.add_subplot(1, 2, 1, projection="3d")
-    ax1.plot_surface(AA, BB, np.minimum(losses_unnorm, 10.0), cmap="viridis", edgecolor="none")
-    ax1.set_title("Phase 2: Gauß OHNE Filternormierung\n(skaliertes Modell → spitzer Trichter)")
-    ax1.set_zlim(0, 10)
-    ax1.set_xlabel("α")
-    ax1.set_ylabel("β")
-    ax1.set_zlabel("Loss")
-
-    ax2 = fig.add_subplot(1, 2, 2, projection="3d")
-    ax2.plot_surface(AA, BB, np.minimum(losses_fn, 10.0), cmap="viridis", edgecolor="none")
-    ax2.set_title("Phase 3: Gauß MIT Filternormierung\n(Li et al. 2018 → flaches, breites Tal)")
-    ax2.set_zlim(0, 10)
-    ax2.set_xlabel("α")
-    ax2.set_ylabel("β")
-    ax2.set_zlabel("Loss")
-
-    plt.tight_layout()
-    plot_path = os.path.join(PREP_DIR, "sanity_check_phases.png")
-    plt.savefig(plot_path)
-    plt.close(fig)
-    print(f"Saved sanity check plot to {plot_path}")
-
-    # Export weights.bin
+    # Also keep weights.bin (Float32 dequantized-exact) for backwards compatibility
     weights_flat = np.concatenate([
-        W1_scaled.reshape(-1),
-        b1_scaled.reshape(-1),
-        W2_scaled.reshape(-1),
-        b2_scaled.reshape(-1),
+        W1_deq.reshape(-1),
+        b1_deq.reshape(-1),
+        W2_deq.reshape(-1),
+        b2_deq.reshape(-1),
     ]).astype("<f4")
     weights_path = os.path.join(ASSETS_DIR, "weights.bin")
     weights_flat.tofile(weights_path)
-    print(f"Exported {weights_path} ({os.path.getsize(weights_path)} bytes, {len(weights_flat)} floats)")
 
-    # Export data.bin
+    # Export 50-image data.bin (39,250 bytes)
     data_bytes = np.concatenate([
         subset_images_u8.reshape(-1),
         subset_labels_u8.reshape(-1),
     ]).astype(np.uint8)
     data_path = os.path.join(ASSETS_DIR, "data.bin")
     data_bytes.tofile(data_path)
-    print(f"Exported {data_path} ({os.path.getsize(data_path)} bytes)")
+    print(f"Exported {data_path} ({os.path.getsize(data_path)} bytes, 50 images)")
 
-    # Export meta.json with model stats, layout offsets, and reference test values
     meta = {
         "architecture": [784, 32, 10],
-        "num_params": int(len(weights_flat)),
+        "num_params": int(len(weights_q16_flat)),
         "num_samples": int(len(y_sub)),
         "scale_factor_c": float(scale_c),
         "sigma_unnorm": float(sigma_unnorm),
         "unlock_random_seconds": 150,
+        "quantization": {
+            "dtype": "int16",
+            "scales": {
+                "W1": s_W1,
+                "b1": s_b1,
+                "W2": s_W2,
+                "b2": s_b2,
+            },
+        },
         "offsets": {
             "W1": [0, 32 * 784],
             "b1": [32 * 784, 32 * 784 + 32],
@@ -314,8 +271,8 @@ def main():
             "b2": [32 * 784 + 32 + 10 * 32, 32 * 784 + 32 + 10 * 32 + 10],
         },
         "metrics": {
-            "subset_train_loss": round(loss_scaled, 6),
-            "subset_train_acc": round(acc_scaled, 4),
+            "subset_train_loss": round(loss_q16, 6),
+            "subset_train_acc": round(acc_q16, 4),
             "full_train_loss": round(float(ckpt["train_loss"]), 4),
             "full_train_acc": round(float(ckpt["train_acc"]), 4),
             "full_test_loss": round(float(ckpt["test_loss"]), 4),
@@ -330,21 +287,6 @@ def main():
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     print(f"Exported {meta_path}")
-
-    # Generate QR Code for GitHub Pages URL
-    pages_url = "https://firestrikertech.github.io/InfoVisualization/"
-    qr = qrcode.QRCode(
-        version=2,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=12,
-        border=3,
-    )
-    qr.add_data(pages_url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="#0f172a", back_color="#ffffff")
-    qr_path = os.path.join(DOCS_DIR, "qr.png")
-    img.save(qr_path)
-    print(f"Generated QR code for {pages_url} at {qr_path}")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@
       <div class="brand-row">
         <div>
           <h1 class="app-title">Loss-Landschaft Explorer</h1>
-          <p class="app-subtitle">MNIST MLP (784 → 32 → 10) · 25.450 Dimensionen → 2D-Schnitt</p>
+          <p class="app-subtitle">MNIST MLP (25.450 Parameter · Int16-quantisiert · 50 Bilder live)</p>
         </div>
         <button id="btnInfo" class="icon-btn" title="Info &amp; QR-Code" aria-label="Info &amp; QR-Code">?</button>
       </div>
@@ -22,7 +22,7 @@
         <!-- Long-press (3s) on this Loss pill unlocks the secret Filter Normalization toggle -->
         <div id="secretTrigger" class="metric-pill" title="Loss im Zentrum θ* (α=0, β=0)">
           <span class="metric-label">Loss L(θ*)</span>
-          <span id="valCenterLoss" class="metric-value">0.128</span>
+          <span id="valCenterLoss" class="metric-value">0.058</span>
         </div>
         <div class="metric-pill">
           <span class="metric-label">Test-Acc</span>
@@ -57,7 +57,7 @@
       <div class="viewport-footer">
         <div class="legend-item">
           <span class="dot-pin"></span>
-          <span>Trainiertes Minimum θ* (0, 0)</span>
+          <span>Zentrum θ* (0, 0)</span>
         </div>
         <div id="computeBadge" class="compute-badge hidden">Berechne…</div>
       </div>
@@ -68,7 +68,7 @@
       <div class="banner-content">
         <div class="banner-text">
           <strong>Hochdimensionaler Raum freigeschaltet!</strong>
-          <span>Statt einzelner Bildebenen: Wähle isotrope Zufallsrichtungen δ, η ~ N(0, I) in allen 25.450 Dimensionen.</span>
+          <span>Statt einzelner Dimensionen: Wähle Gaußsche Zufallsrichtungen δ, η ~ N(0, I) gleichzeitig über alle 25.450 Parameter.</span>
         </div>
         <div class="banner-actions">
           <button id="btnRollGaussian" class="btn-primary-glow">🎲 Gauß-Zufallsrichtungen erzeugen</button>
@@ -83,68 +83,73 @@
     <section class="controls-card">
       <div class="controls-header">
         <div class="mode-tabs">
-          <button id="tabManual" class="tab-btn active">1. Richtungs-Mixer (Manuell)</button>
-          <button id="tabRandom" class="tab-btn hidden">2. Gauß-Richtungen</button>
+          <button id="tabManual" class="tab-btn active">1. Manuelle Richtungen</button>
+          <button id="tabRandom" class="tab-btn hidden">2. Gauß-Zufallsrichtungen</button>
         </div>
         <span id="modeStatusBadge" class="status-tag">Manueller Schnitt</span>
       </div>
 
-      <!-- Manual Mixer View (Phase 1) -->
+      <!-- Manual 4-Slider View (Phase 1) -->
       <div id="panelManual" class="control-body">
         <p class="helper-note">
-          Du stehst fest im trainierten Minimum <strong>θ*</strong>. Mische die Grundrichtungen für Achse <strong>α (δ)</strong> und Achse <strong>β (η)</strong>, um den 25.450-dimensionalen Raum aufzuspannen:
+          Du stehst im Punkt <strong>θ*</strong>. Scrolle für jede Achse durch die Dimensionen des Parameterraums und justiere deren Stärke – findest du das Minimum?
         </p>
 
-        <!-- Axis selector for mobile compactness -->
-        <div class="axis-selector-row">
-          <button id="btnEditAlpha" class="axis-tab active-alpha">Achse α (Richtung δ) bearbeiten</button>
-          <button id="btnEditBeta" class="axis-tab">Achse β (Richtung η) bearbeiten</button>
-        </div>
+        <div class="four-sliders-grid">
+          <!-- Axis Alpha (Direction delta) -->
+          <div class="axis-card axis-card-alpha">
+            <div class="axis-card-title">Achse α (Richtung δ)</div>
 
-        <div id="slidersContainer" class="sliders-list"></div>
-
-        <!-- Plane Rotation & Span Sliders -->
-        <div class="fine-tune-grid">
-          <div class="slider-block">
-            <div class="slider-head">
-              <span>Drehwinkel in der (δ, η)-Ebene</span>
-              <strong id="lblAngle">0°</strong>
+            <div class="slider-block">
+              <div class="slider-head">
+                <span>1. Durch Dimensionen scrollen</span>
+                <strong id="lblAlphaDim" class="val-alpha">Dim #1</strong>
+              </div>
+              <div id="descAlphaDim" class="slider-sub">Dim #1 · Eingabepixel-Block 1/16</div>
+              <input id="rngAlphaDim" type="range" min="1" max="50" step="1" value="1" class="range-alpha" />
             </div>
-            <input id="rngAngle" type="range" min="-180" max="180" step="5" value="0" />
+
+            <div class="slider-block">
+              <div class="slider-head">
+                <span>2. Stärke in dieser Dimension</span>
+                <strong id="lblAlphaStr" class="val-alpha">+1.00</strong>
+              </div>
+              <input id="rngAlphaStr" type="range" min="-2.0" max="2.0" step="0.05" value="1.0" class="range-alpha" />
+            </div>
           </div>
 
-          <div class="slider-block">
-            <div class="slider-head">
-              <span>Zoom / Bereich α, β ∈ [-s, +s]</span>
-              <strong id="lblSpan">±1.0</strong>
-            </div>
-            <input id="rngSpan" type="range" min="0.3" max="2.0" step="0.1" value="1.0" />
-          </div>
-        </div>
+          <!-- Axis Beta (Direction eta) -->
+          <div class="axis-card axis-card-beta">
+            <div class="axis-card-title">Achse β (Richtung η)</div>
 
-        <div class="preset-row">
-          <button id="btnResetManual" class="btn-secondary">Standard-Mix</button>
-          <button id="btnHintValley" class="btn-secondary" title="Kombination aus beiden Schichten + Rotation">Tipp: Schichten koppeln</button>
+            <div class="slider-block">
+              <div class="slider-head">
+                <span>3. Durch Dimensionen scrollen</span>
+                <strong id="lblBetaDim" class="val-beta">Dim #2</strong>
+              </div>
+              <div id="descBetaDim" class="slider-sub">Dim #2 · Eingabepixel-Block 2/16</div>
+              <input id="rngBetaDim" type="range" min="1" max="50" step="1" value="2" class="range-beta" />
+            </div>
+
+            <div class="slider-block">
+              <div class="slider-head">
+                <span>4. Stärke in dieser Dimension</span>
+                <strong id="lblBetaStr" class="val-beta">+1.00</strong>
+              </div>
+              <input id="rngBetaStr" type="range" min="-2.0" max="2.0" step="0.05" value="1.0" class="range-beta" />
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- Random Gaussian View (Phase 2 & 3) -->
       <div id="panelRandom" class="control-body hidden">
         <p class="helper-note">
-          <strong>Gaußsche Zufallsrichtungen (Li et al., 2018):</strong> Jedes der 25.450 Gewichte wird unabhängig gemäß <code>N(0, 1)</code> gestört.
+          <strong>Gaußsche Zufallsrichtungen (Li et al., 2018):</strong> Jedes der 25.450 Gewichte wird gleichzeitig gemäß <code>N(0, 1)</code> gestört.
         </p>
         <div class="random-controls-row">
           <button id="btnRerollSeed" class="btn-primary-glow">🎲 Neue Zufallsrichtungen würfeln</button>
           <span id="lblSeedInfo" class="seed-badge">Seed #2026</span>
-        </div>
-        <div class="fine-tune-grid" style="margin-top: 10px;">
-          <div class="slider-block">
-            <div class="slider-head">
-              <span>Zoom / Bereich α, β ∈ [-s, +s]</span>
-              <strong id="lblSpanRandom">±1.0</strong>
-            </div>
-            <input id="rngSpanRandom" type="range" min="0.3" max="2.0" step="0.1" value="1.0" />
-          </div>
         </div>
       </div>
     </section>
@@ -159,8 +164,8 @@
       </div>
       <div class="modal-body">
         <p>
-          Diese interaktive Demo berechnet <strong>live auf deinem Smartphone</strong> echte 3D-Loss-Landschaften
-          eines auf MNIST trainierten Neuronalen Netzes (<code>784 → 32 → 10</code>, 25.450 Parameter) über 500 Bilder:
+          Diese Demo berechnet <strong>live auf deinem Smartphone</strong> echte 3D-Loss-Landschaften
+          eines quantisierten MNIST-Netzes (<code>784 → 32 → 10</code>, 25.450 Parameter) über 50 Bilder:
         </p>
         <p class="formula-box">
           f(α, β) = L(θ* + α · δ + β · η)

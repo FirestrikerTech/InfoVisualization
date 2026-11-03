@@ -1,20 +1,22 @@
 /**
  * Main Application Controller for the MNIST 3D Loss Landscape Live Demo.
  *
- * Orchestrates:
- * - Loading binary weights (`weights.bin`), 500-image MNIST subset (`data.bin`), and `meta.json`.
- * - Initializing the Web Worker (`worker.js`) and Three.js / 2D Contour Plotter (`plot.js`).
- * - Phase 1: Manual Direction Mixer (`BASIS_COMPONENTS`, plane angle, span).
- * - Phase 2: Time-based unlock (~2.5 minutes, configurable via `meta.json` or instant via `#presenter`)
- *            of isotropic Gaussian random directions -> sharp funnel on the rescaled network.
- * - Phase 3: Hidden Presenter Unlock (3-second long-press on the `Loss L(θ*)` pill or `#presenter` hash)
- *            activating neuron-wise Filter Normalization (Li et al., 2018) -> wide, flat valley.
+ * Updates:
+ * - Loads Int16-quantized weights (`weights_q16.bin`, 50.9 KB) and 50 MNIST images (`data.bin`, 39 KB).
+ * - Simplified 4-slider manual interface:
+ *     1. Achse α Dimension-Scroller (1..50)
+ *     2. Achse α Stärke (-2.0..+2.0)
+ *     3. Achse β Dimension-Scroller (1..50)
+ *     4. Achse β Stärke (-2.0..+2.0)
+ * - Initialized to Dim #1 & Dim #2 where the audience sees an inclined ramp / ridge instead of
+ *   the minimum!
+ * - Phase 2 (~2.5 min): Unlocks Gaussian random directions -> sharp funnel on rescaled network.
+ * - Phase 3 (Secret 3s long-press on Loss L(θ*) or `#presenter`): Filter Normalization -> flat valley.
  */
 
 import {
-  BASIS_COMPONENTS,
-  buildBasisTemplates,
-  buildManualDirections,
+  describeDimension,
+  buildManualDirections4Sliders,
   buildGaussianDirections,
 } from "./directions.js";
 import { LandscapePlotter } from "./plot.js";
@@ -25,13 +27,12 @@ const state = {
   b1: null,
   W2: null,
   b2: null,
-  templates: null,
 
   mode: "manual", // 'manual' | 'random'
-  editingAxis: "alpha", // 'alpha' | 'beta'
-  alphaMix: {},
-  betaMix: {},
-  angleDeg: 0,
+  alphaDim: 1,
+  alphaStr: 1.0,
+  betaDim: 2,
+  betaStr: 1.0,
   span: 1.0,
 
   randomSeed: 2026,
@@ -67,19 +68,19 @@ const elModeStatusBadge = document.getElementById("modeStatusBadge");
 const elPanelManual = document.getElementById("panelManual");
 const elPanelRandom = document.getElementById("panelRandom");
 
-const elBtnEditAlpha = document.getElementById("btnEditAlpha");
-const elBtnEditBeta = document.getElementById("btnEditBeta");
-const elSlidersContainer = document.getElementById("slidersContainer");
+// The 4 Sliders
+const elRngAlphaDim = document.getElementById("rngAlphaDim");
+const elLblAlphaDim = document.getElementById("lblAlphaDim");
+const elDescAlphaDim = document.getElementById("descAlphaDim");
+const elRngAlphaStr = document.getElementById("rngAlphaStr");
+const elLblAlphaStr = document.getElementById("lblAlphaStr");
 
-const elRngAngle = document.getElementById("rngAngle");
-const elLblAngle = document.getElementById("lblAngle");
-const elRngSpan = document.getElementById("rngSpan");
-const elLblSpan = document.getElementById("lblSpan");
-const elRngSpanRandom = document.getElementById("rngSpanRandom");
-const elLblSpanRandom = document.getElementById("lblSpanRandom");
+const elRngBetaDim = document.getElementById("rngBetaDim");
+const elLblBetaDim = document.getElementById("lblBetaDim");
+const elDescBetaDim = document.getElementById("descBetaDim");
+const elRngBetaStr = document.getElementById("rngBetaStr");
+const elLblBetaStr = document.getElementById("lblBetaStr");
 
-const elBtnResetManual = document.getElementById("btnResetManual");
-const elBtnHintValley = document.getElementById("btnHintValley");
 const elBtnRerollSeed = document.getElementById("btnRerollSeed");
 const elLblSeedInfo = document.getElementById("lblSeedInfo");
 
@@ -90,65 +91,14 @@ const elBtnCloseModal = document.getElementById("btnCloseModal");
 let plotter = null;
 let worker = null;
 
-function initDefaultMix() {
-  for (const c of BASIS_COMPONENTS) {
-    state.alphaMix[c.id] = c.defaultAlpha;
-    state.betaMix[c.id] = c.defaultBeta;
-  }
-  state.angleDeg = 0;
-  state.span = 1.0;
-  elRngAngle.value = "0";
-  elLblAngle.textContent = "0°";
-  elRngSpan.value = "1.0";
-  elLblSpan.textContent = "±1.0";
-  elRngSpanRandom.value = "1.0";
-  elLblSpanRandom.textContent = "±1.0";
-}
+function syncSliderLabels() {
+  elLblAlphaDim.textContent = `Dim #${state.alphaDim}`;
+  elDescAlphaDim.textContent = describeDimension(state.alphaDim);
+  elLblAlphaStr.textContent = (state.alphaStr >= 0 ? "+" : "") + state.alphaStr.toFixed(2);
 
-function renderManualSliders() {
-  elSlidersContainer.innerHTML = "";
-  const activeMix = state.editingAxis === "alpha" ? state.alphaMix : state.betaMix;
-  const accentColor = state.editingAxis === "alpha" ? "#38bdf8" : "#f59e0b";
-
-  for (const comp of BASIS_COMPONENTS) {
-    const val = activeMix[comp.id] ?? 0.0;
-    const block = document.createElement("div");
-    block.className = "slider-block";
-
-    const head = document.createElement("div");
-    head.className = "slider-head";
-    const titleSpan = document.createElement("span");
-    titleSpan.textContent = comp.label;
-    const valStrong = document.createElement("strong");
-    valStrong.style.color = accentColor;
-    valStrong.textContent = (val >= 0 ? "+" : "") + val.toFixed(2);
-    head.appendChild(titleSpan);
-    head.appendChild(valStrong);
-
-    const sub = document.createElement("div");
-    sub.className = "slider-sub";
-    sub.textContent = comp.shortDesc;
-
-    const input = document.createElement("input");
-    input.type = "range";
-    input.min = "-1.5";
-    input.max = "1.5";
-    input.step = "0.05";
-    input.value = String(val);
-    input.style.accentColor = accentColor;
-
-    input.addEventListener("input", () => {
-      const v = parseFloat(input.value);
-      activeMix[comp.id] = v;
-      valStrong.textContent = (v >= 0 ? "+" : "") + v.toFixed(2);
-      scheduleCompute(45);
-    });
-
-    block.appendChild(head);
-    block.appendChild(sub);
-    block.appendChild(input);
-    elSlidersContainer.appendChild(block);
-  }
+  elLblBetaDim.textContent = `Dim #${state.betaDim}`;
+  elDescBetaDim.textContent = describeDimension(state.betaDim);
+  elLblBetaStr.textContent = (state.betaStr >= 0 ? "+" : "") + state.betaStr.toFixed(2);
 }
 
 function updateStatusBadge() {
@@ -183,7 +133,7 @@ function switchMode(newMode) {
     elRandomBanner.classList.add("hidden");
   }
   updateStatusBadge();
-  scheduleCompute(10);
+  scheduleCompute(5);
 }
 
 function unlockRandomPhase() {
@@ -210,7 +160,6 @@ function unlockSecretPresenterControls(autoEnable = false) {
     const info = document.createElement("div");
     info.className = "secret-info";
     const title = document.createElement("strong");
-    // Constructed dynamically at runtime
     title.textContent = "✨ " + ["Filter", "normierung"].join("") + " (Li et al., 2018)";
     const sub = document.createElement("span");
     sub.textContent = "Skalierungsinvariante Normierung pro Neuron: d ← (d / ‖d‖) · ‖θ‖";
@@ -234,7 +183,7 @@ function unlockSecretPresenterControls(autoEnable = false) {
       state.useFilterNorm = !state.useFilterNorm;
       syncBtnText();
       updateStatusBadge();
-      scheduleCompute(10);
+      scheduleCompute(5);
     });
 
     row.appendChild(info);
@@ -249,12 +198,11 @@ function unlockSecretPresenterControls(autoEnable = false) {
     state.useFilterNorm = true;
     if (state._syncSecretBtn) state._syncSecretBtn();
     updateStatusBadge();
-    scheduleCompute(10);
+    scheduleCompute(5);
   }
 }
 
 function setupSecretGesture() {
-  // 1. URL Hash shortcut (#presenter) for presenter's laptop / QR code
   const checkHash = () => {
     if (window.location.hash.toLowerCase().includes("presenter")) {
       unlockRandomPhase();
@@ -264,7 +212,6 @@ function setupSecretGesture() {
   checkHash();
   window.addEventListener("hashchange", checkHash);
 
-  // 2. 3-second long-press on the "Loss L(θ*)" metric pill
   let pressTimer = null;
   const startPress = () => {
     clearTimeout(pressTimer);
@@ -284,7 +231,7 @@ function setupSecretGesture() {
   elSecretTrigger.addEventListener("mouseleave", cancelPress);
 }
 
-function scheduleCompute(delayMs = 40) {
+function scheduleCompute(delayMs = 12) {
   clearTimeout(state.debounceTimer);
   state.debounceTimer = setTimeout(() => {
     runCompute();
@@ -292,9 +239,8 @@ function scheduleCompute(delayMs = 40) {
 }
 
 function runCompute() {
-  if (!worker || !state.templates) return;
+  if (!worker || !state.W1) return;
 
-  // Start the 2.5-minute countdown for Phase 2 on first landscape generation
   if (!state.unlockTimerStarted) {
     state.unlockTimerStarted = true;
     const waitSec = state.meta?.unlock_random_seconds ?? 150;
@@ -308,13 +254,15 @@ function runCompute() {
 
   let dirs;
   if (state.mode === "manual") {
-    dirs = buildManualDirections(
-      state.templates,
-      state.alphaMix,
-      state.betaMix,
-      state.angleDeg,
+    dirs = buildManualDirections4Sliders(
+      state.alphaDim,
+      state.alphaStr,
+      state.betaDim,
+      state.betaStr,
       state.W1,
+      state.b1,
       state.W2,
+      state.b2,
       state.useFilterNorm
     );
   } else {
@@ -337,7 +285,6 @@ function runCompute() {
 }
 
 function bindUIEvents() {
-  // 3D vs 2D toggle
   elBtnView3D.addEventListener("click", () => {
     elBtnView3D.classList.add("active");
     elBtnView2D.classList.remove("active");
@@ -350,97 +297,50 @@ function bindUIEvents() {
     plotter.setViewMode("2d");
   });
 
-  // Log scale toggle
   elBtnLogScale.addEventListener("click", () => {
     const next = !plotter.useLogScale;
     elBtnLogScale.classList.toggle("active", next);
     plotter.setLogScale(next);
   });
 
-  // Mode tabs
   elTabManual.addEventListener("click", () => switchMode("manual"));
   elTabRandom.addEventListener("click", () => switchMode("random"));
 
-  // Banner action -> jump straight into Phase 2 (Gaussian Random Directions)
   elBtnRollGaussian.addEventListener("click", () => {
     switchMode("random");
   });
 
-  // Axis editing toggle in Manual Mode
-  elBtnEditAlpha.addEventListener("click", () => {
-    state.editingAxis = "alpha";
-    elBtnEditAlpha.className = "axis-tab active-alpha";
-    elBtnEditBeta.className = "axis-tab";
-    renderManualSliders();
-  });
-
-  elBtnEditBeta.addEventListener("click", () => {
-    state.editingAxis = "beta";
-    elBtnEditAlpha.className = "axis-tab";
-    elBtnEditBeta.className = "axis-tab active-beta";
-    renderManualSliders();
-  });
-
-  // Angle & Span sliders
-  elRngAngle.addEventListener("input", () => {
-    state.angleDeg = parseFloat(elRngAngle.value);
-    elLblAngle.textContent = `${state.angleDeg}°`;
-    scheduleCompute(40);
-  });
-
-  const onSpanChange = (val) => {
-    state.span = val;
-    elRngSpan.value = String(val);
-    elRngSpanRandom.value = String(val);
-    elLblSpan.textContent = `±${val.toFixed(1)}`;
-    elLblSpanRandom.textContent = `±${val.toFixed(1)}`;
-    scheduleCompute(40);
-  };
-
-  elRngSpan.addEventListener("input", () => onSpanChange(parseFloat(elRngSpan.value)));
-  elRngSpanRandom.addEventListener("input", () => onSpanChange(parseFloat(elRngSpanRandom.value)));
-
-  // Manual presets
-  elBtnResetManual.addEventListener("click", () => {
-    initDefaultMix();
-    renderManualSliders();
-    scheduleCompute(15);
-  });
-
-  // "Tipp: Schichten koppeln" shows that by carefully mixing hidden + output + radial components
-  // and rotating the plane, one CAN manually glimpse a local basin, though still distorted!
-  elBtnHintValley.addEventListener("click", () => {
-    state.alphaMix = {
-      pixTopBottom: 0.65,
-      pixLeftRight: -0.35,
-      pixCenterEdge: 0.9,
-      hidGroupAB: 1.15,
-      outDigits: 0.55,
-      radialScale: 0.85,
-    };
-    state.betaMix = {
-      pixTopBottom: -0.4,
-      pixLeftRight: 0.75,
-      pixCenterEdge: -0.6,
-      hidGroupAB: -0.8,
-      outDigits: 0.65,
-      radialScale: -0.75,
-    };
-    state.angleDeg = 35;
-    elRngAngle.value = "35";
-    elLblAngle.textContent = "35°";
-    renderManualSliders();
-    scheduleCompute(15);
-  });
-
-  // Random seed re-roll
-  elBtnRerollSeed.addEventListener("click", () => {
-    state.randomSeed = Math.floor(1000 + Math.random() * 9000);
-    elLblSeedInfo.textContent = `Seed #${state.randomSeed}`;
+  // The 4 Sliders
+  elRngAlphaDim.addEventListener("input", () => {
+    state.alphaDim = parseInt(elRngAlphaDim.value, 10);
+    syncSliderLabels();
     scheduleCompute(10);
   });
 
-  // Info modal
+  elRngAlphaStr.addEventListener("input", () => {
+    state.alphaStr = parseFloat(elRngAlphaStr.value);
+    syncSliderLabels();
+    scheduleCompute(10);
+  });
+
+  elRngBetaDim.addEventListener("input", () => {
+    state.betaDim = parseInt(elRngBetaDim.value, 10);
+    syncSliderLabels();
+    scheduleCompute(10);
+  });
+
+  elRngBetaStr.addEventListener("input", () => {
+    state.betaStr = parseFloat(elRngBetaStr.value);
+    syncSliderLabels();
+    scheduleCompute(10);
+  });
+
+  elBtnRerollSeed.addEventListener("click", () => {
+    state.randomSeed = Math.floor(1000 + Math.random() * 9000);
+    elLblSeedInfo.textContent = `Seed #${state.randomSeed}`;
+    scheduleCompute(5);
+  });
+
   elBtnInfo.addEventListener("click", () => elModalInfo.classList.remove("hidden"));
   elBtnCloseModal.addEventListener("click", () => elModalInfo.classList.add("hidden"));
   elModalInfo.addEventListener("click", (e) => {
@@ -448,37 +348,46 @@ function bindUIEvents() {
   });
 }
 
+function dequantizeSlice(q16Array, start, end, scale) {
+  const len = end - start;
+  const out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = q16Array[start + i] * scale;
+  }
+  return out;
+}
+
 async function boot() {
   plotter = new LandscapePlotter(elPlot3D, elPlot2D);
-  initDefaultMix();
-  renderManualSliders();
+  syncSliderLabels();
   bindUIEvents();
   setupSecretGesture();
 
-  elComputeBadge.textContent = "Lade Modell…";
+  elComputeBadge.textContent = "Lade…";
   elComputeBadge.classList.remove("hidden");
 
-  const [metaRes, weightsRes, dataRes] = await Promise.all([
+  // Load compact Int16 quantized weights (50.9 KB) + 50-image dataset (39.2 KB)
+  const [metaRes, weightsQ16Res, dataRes] = await Promise.all([
     fetch("assets/meta.json"),
-    fetch("assets/weights.bin"),
+    fetch("assets/weights_q16.bin"),
     fetch("assets/data.bin"),
   ]);
 
   const meta = await metaRes.json();
-  const weightsBuffer = await weightsRes.arrayBuffer();
+  const weightsQ16Buffer = await weightsQ16Res.arrayBuffer();
   const dataBuffer = await dataRes.arrayBuffer();
 
   state.meta = meta;
   elValTestAcc.textContent = `${(meta.metrics.full_test_acc * 100).toFixed(1)}%`;
 
-  const weightsFloats = new Float32Array(weightsBuffer);
+  const q16 = new Int16Array(weightsQ16Buffer);
   const o = meta.offsets;
-  state.W1 = weightsFloats.slice(o.W1[0], o.W1[1]);
-  state.b1 = weightsFloats.slice(o.b1[0], o.b1[1]);
-  state.W2 = weightsFloats.slice(o.W2[0], o.W2[1]);
-  state.b2 = weightsFloats.slice(o.b2[0], o.b2[1]);
+  const sc = meta.quantization.scales;
 
-  state.templates = buildBasisTemplates(state.W1, state.b1, state.W2, state.b2);
+  state.W1 = dequantizeSlice(q16, o.W1[0], o.W1[1], sc.W1);
+  state.b1 = dequantizeSlice(q16, o.b1[0], o.b1[1], sc.b1);
+  state.W2 = dequantizeSlice(q16, o.W2[0], o.W2[1], sc.W2);
+  state.b2 = dequantizeSlice(q16, o.b2[0], o.b2[1], sc.b2);
 
   worker = new Worker("js/worker.js");
   worker.onmessage = (e) => {
@@ -486,10 +395,6 @@ async function boot() {
     if (msg.type === "ready") {
       elValCenterLoss.textContent = msg.centerLoss.toFixed(3);
       runCompute();
-    } else if (msg.type === "preview") {
-      if (msg.jobId === state.jobCounter) {
-        plotter.updateSurface(msg);
-      }
     } else if (msg.type === "result") {
       if (msg.jobId === state.jobCounter) {
         plotter.updateSurface(msg);
@@ -503,12 +408,14 @@ async function boot() {
   worker.postMessage(
     {
       type: "init",
-      weightsBuffer,
+      W1: state.W1,
+      b1: state.b1,
+      W2: state.W2,
+      b2: state.b2,
       dataBuffer,
       numSamples: meta.num_samples,
-      offsets: meta.offsets,
     },
-    [weightsBuffer, dataBuffer]
+    [dataBuffer]
   );
 }
 

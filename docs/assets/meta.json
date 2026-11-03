@@ -5,10 +5,19 @@
     10
   ],
   "num_params": 25450,
-  "num_samples": 500,
+  "num_samples": 50,
   "scale_factor_c": 10.0,
   "sigma_unnorm": 0.085,
   "unlock_random_seconds": 150,
+  "quantization": {
+    "dtype": "int16",
+    "scales": {
+      "W1": 0.0002626856278466557,
+      "b1": 0.00010927489589181597,
+      "W2": 3.248696664896971e-06,
+      "b2": 9.438479267201506e-06
+    }
+  },
   "offsets": {
     "W1": [
       0,
@@ -28,15 +37,15 @@
     ]
   },
   "metrics": {
-    "subset_train_loss": 0.128203,
-    "subset_train_acc": 0.96,
+    "subset_train_loss": 0.057524,
+    "subset_train_acc": 1.0,
     "full_train_loss": 0.1193,
     "full_train_acc": 0.9659,
     "full_test_loss": 0.1371,
     "full_test_acc": 0.9582
   },
   "verification": {
-    "center_loss": 0.1282031238079071,
-    "center_acc": 0.9599999785423279
+    "center_loss": 0.05752404406666756,
+    "center_acc": 1.0
   }
 }

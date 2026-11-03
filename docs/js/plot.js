@@ -413,7 +413,9 @@ export class LandscapePlotter {
     this.wireMesh = new THREE.Mesh(geo, wireMat);
     this.scene.add(this.wireMesh);
 
-    // Position the glowing red marker at the trained center (alpha=0, beta=0)
+    // Position the glowing red marker at the center (alpha=0, beta=0)
+    // Only highlight it prominently when we are in random/filter-norm mode or if the user
+    // actually found a 2D basin where the edges in all 4 directions are clearly higher!
     const cIdx = Math.floor(gridSize / 2) * gridSize + Math.floor(gridSize / 2);
     const centerLoss = losses[cIdx];
     const centerT = this._mapLossToNormalizedHeight(centerLoss, baseMin, effectiveCap);
