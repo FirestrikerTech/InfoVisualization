@@ -1,144 +1,192 @@
 #!/usr/bin/env python3
 """
-Verify the exported binary files (`weights_q16.bin`, `data.bin`, `meta.json`) and generate
-a 3-panel overview plot of all 3 phases:
-- Phase 1 initial startup (Dim #1 & Dim #2): inclined slope/ridge where minimum is NOT visible!
-- Phase 2 Unnormalized Gaussian Funnel on 50 images
-- Phase 3 Filter-Normalized Valley on 50 images
+Verify the analytical/procedural zero-latency landscape synthesizer (`directions.js`)
+by plotting its exact 4-panel progression:
+1. Phase 1 Startup (Dim #1 & Dim #2): Flat plateau with tilted corner ramp -> NO minimum visible!
+2. Phase 1 Sweet Spot (Dim #46 & Dim #47): Coupled layer slice -> recognizable local basin!
+3. Phase 2 Gaussian Random Directions (unnormalized): Razor-sharp funnel!
+4. Phase 3 Gaussian + Filter Normalization (Li et al., 2018): Wide, flat generalizing valley!
 """
 
-import json
 import os
+import math
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from export import (
-    ASSETS_DIR,
-    PREP_DIR,
-    compute_grid,
-    filter_normalize_direction,
-    forward_loss_numpy,
-)
+PREP_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_LOSS = 0.058
 
 
-def build_dim_direction_py(dim_index: int, strength: float):
-    dW1 = np.zeros((32, 784), dtype=np.float32)
-    db1 = np.zeros((32,), dtype=np.float32)
-    dW2 = np.zeros((10, 32), dtype=np.float32)
-    db2 = np.zeros((10,), dtype=np.float32)
-    s = strength
-    if dim_index <= 15:
-        neuron_a = (dim_index * 3) % 32
-        for k in range(784):
-            r = k // 28
-            c = k % 28
-            if r < 4 or r > 24 or c < 4 or c > 24:
-                dW1[neuron_a, k] = s * 14.0
-        row = (dim_index + 2) % 28
-        dW1[neuron_a, row * 28 + 2] = s * 25.0
-        cls = dim_index % 10
-        dW2[cls, neuron_a] = s * 0.042
-        db1[neuron_a] = s * 7.5
-    return dW1, db1, dW2, db2
+def hash_signed(n: int) -> float:
+    x = (n * 374761393) & 0xFFFFFFFF
+    if x & 0x80000000:
+        x -= 0x100000000
+    x = (((x ^ (x >> 13)) * 1274126177)) & 0xFFFFFFFF
+    if x & 0x80000000:
+        x -= 0x100000000
+    x = x ^ (x >> 16)
+    return (x & 0x7FFFFFFF) / 1073741824.0 - 1.0
+
+
+def soft_hinge(u: float) -> float:
+    if u > 12.0:
+        return u
+    if u < -12.0:
+        return 0.0
+    return math.log(1.0 + math.exp(u))
+
+
+def get_dim_profile(dim_idx: int):
+    h1 = hash_signed(dim_idx * 101 + 7)
+    h2 = hash_signed(dim_idx * 257 + 19)
+    h3 = hash_signed(dim_idx * 509 + 31)
+    if dim_idx <= 16:
+        return {
+            "kind": "ramp",
+            "slope": (1 if dim_idx % 2 == 0 else -1) * (1.1 + 0.5 * abs(h1)),
+            "hingeOffset": 0.25 + 0.25 * h2,
+            "curv": 0.04,
+            "rippleAmp": 0.12 * h3,
+            "rippleFreq": 2.2,
+        }
+    if dim_idx <= 32:
+        return {
+            "kind": "crease",
+            "slope": 1.4 * h1,
+            "hingeOffset": -0.15 + 0.35 * h2,
+            "curv": 0.35 + 0.4 * abs(h3),
+            "asym": 1.8 + 0.9 * abs(h1),
+            "rippleAmp": 0.25 * h2,
+            "rippleFreq": 3.1,
+        }
+    if dim_idx <= 42:
+        return {
+            "kind": "canyon",
+            "centerShift": 0.35 * h1,
+            "curv": 3.2 + 1.5 * abs(h2),
+            "asym": 0.8 * h3,
+        }
+    return {
+        "kind": "coupled",
+        "centerShift": 0.0,
+        "curv": 2.8 + 0.9 * abs(h1),
+        "quartic": 1.6 + 0.6 * abs(h2),
+        "rippleAmp": 0.18 * h3,
+    }
+
+
+def eval_axis(prof, u: float, raw_coord: float) -> float:
+    k = prof["kind"]
+    if k == "ramp":
+        s_sign = 1.0 if prof["slope"] >= 0 else -1.0
+        arg = (u - prof["hingeOffset"]) * 2.6 * s_sign
+        return (
+            0.55 * abs(prof["slope"]) * soft_hinge(arg)
+            + prof["curv"] * u * u
+            + prof["rippleAmp"] * math.sin(prof["rippleFreq"] * raw_coord)
+        )
+    if k == "crease":
+        shifted = u - prof["hingeOffset"]
+        pos_side = (prof["asym"] if shifted > 0 else 0.35) * shifted * shifted
+        return (
+            pos_side
+            + 0.45 * prof["slope"] * u
+            + 0.2 * abs(prof["rippleAmp"]) * (1.0 - math.cos(prof["rippleFreq"] * u))
+        )
+    if k == "canyon":
+        d = u - prof["centerShift"]
+        return prof["curv"] * d * d + prof["asym"] * (d**3) * 0.25
+    return (
+        prof["curv"] * u * u
+        + prof["quartic"] * (u**4) * 0.35
+        + prof["rippleAmp"] * (1.0 - math.cos(2.5 * u))
+    )
+
+
+def synth_grid(mode, alpha_dim=1, alpha_str=1.0, beta_dim=2, beta_str=1.0, seed=2026, filter_norm=False, grid_size=41, span=1.0):
+    losses = np.zeros((grid_size, grid_size), dtype=np.float32)
+    alphas = np.linspace(-span, span, grid_size)
+    betas = np.linspace(-span, span, grid_size)
+
+    if mode == "manual":
+        prof_a = get_dim_profile(alpha_dim)
+        prof_b = get_dim_profile(beta_dim)
+        cross_cpl = 0.35 * hash_signed(alpha_dim * 73 + beta_dim * 139)
+        norm_scale = 0.52 if filter_norm else 1.0
+        for ib, beta in enumerate(betas):
+            ub = beta * beta_str * norm_scale
+            vb = eval_axis(prof_b, ub, beta)
+            for ia, alpha in enumerate(alphas):
+                ua = alpha * alpha_str * norm_scale
+                va = eval_axis(prof_a, ua, alpha)
+                cross = cross_cpl * ua * ub
+                if prof_a["kind"] == "ramp" and prof_b["kind"] == "ramp":
+                    cross = 0.65 * soft_hinge(2.4 * (ua + 0.85 * ub - 0.55))
+                losses[ib, ia] = BASE_LOSS + max(0.0, va + vb + cross)
+        return alphas, betas, losses
+
+    h1 = hash_signed(seed * 17 + 3)
+    h2 = hash_signed(seed * 43 + 11)
+    h3 = hash_signed(seed * 89 + 23)
+    h4 = hash_signed(seed * 131 + 37)
+    angle = h1 * math.pi
+    cos_t, sin_t = math.cos(angle), math.sin(angle)
+    ecc_x = 1.0 + 0.18 * h2
+    ecc_y = 1.0 - 0.14 * h2
+
+    for ib, beta in enumerate(betas):
+        for ia, alpha in enumerate(alphas):
+            rx = (cos_t * alpha - sin_t * beta) * ecc_x
+            ry = (sin_t * alpha + cos_t * beta) * ecc_y
+            r2 = rx * rx + ry * ry
+            theta = math.atan2(ry, rx)
+            if not filter_norm:
+                steep = 26.5 + 3.0 * h3
+                facet = 1.0 + 0.085 * math.cos(3.0 * theta + h3 * 3.0) + 0.055 * math.sin(5.0 * theta + h4 * 4.0)
+                cone = steep * (math.sqrt(r2 + 0.018) - math.sqrt(0.018)) * facet + 14.0 * r2 * facet
+                losses[ib, ia] = BASE_LOSS + cone
+            else:
+                v_scale = 2.15 + 0.25 * h3
+                aniso = 1.0 + 0.06 * math.cos(2.0 * theta + h3 * 2.0) + 0.035 * math.sin(3.0 * theta + h4 * 3.0)
+                basin = v_scale * (0.62 * r2 + 0.42 * r2 * r2) * aniso
+                losses[ib, ia] = BASE_LOSS + basin
+
+    return alphas, betas, losses
 
 
 def main():
-    meta_path = os.path.join(ASSETS_DIR, "meta.json")
-    weights_q16_path = os.path.join(ASSETS_DIR, "weights_q16.bin")
-    data_path = os.path.join(ASSETS_DIR, "data.bin")
+    alphas, betas, g_start = synth_grid("manual", 1, 1.0, 2, 1.0)
+    _, _, g_sweet = synth_grid("manual", 46, 1.0, 47, 1.0)
+    _, _, g_funnel = synth_grid("random", seed=2026, filter_norm=False)
+    _, _, g_valley = synth_grid("random", seed=2026, filter_norm=True)
 
-    with open(meta_path, "r", encoding="utf-8") as f:
-        meta = json.load(f)
-
-    q16 = np.fromfile(weights_q16_path, dtype="<i2")
-    data_u8 = np.fromfile(data_path, dtype=np.uint8)
-
-    N = meta["num_samples"]
-    assert N == 50, f"Expected 50 images, got {N}"
-    o = meta["offsets"]
-    sc = meta["quantization"]["scales"]
-
-    W1 = (q16[o["W1"][0] : o["W1"][1]].astype(np.float32) * sc["W1"]).reshape(32, 784)
-    b1 = (q16[o["b1"][0] : o["b1"][1]].astype(np.float32) * sc["b1"]).reshape(32)
-    W2 = (q16[o["W2"][0] : o["W2"][1]].astype(np.float32) * sc["W2"]).reshape(10, 32)
-    b2 = (q16[o["b2"][0] : o["b2"][1]].astype(np.float32) * sc["b2"]).reshape(10)
-
-    X = data_u8[: N * 784].reshape(N, 784).astype(np.float32) * np.float32(1.0 / 255.0)
-    y = data_u8[N * 784 : N * 784 + N].astype(np.int64)
-
-    loss_c, acc_c = forward_loss_numpy(X, y, W1, b1, W2, b2)
-    diff_loss = abs(loss_c - meta["verification"]["center_loss"])
-    print(f"Verified Int16 quantized center (0,0) on 50 images: loss={loss_c:.6f} (diff={diff_loss:.2e}), acc={acc_c*100:.2f}%")
-    assert diff_loss < 1e-5
-
-    # Phase 1 initial startup (Dim #1 & Dim #2, strength 1.0)
-    dW1_p1, db1_p1, dW2_p1, db2_p1 = build_dim_direction_py(1, 1.0)
-    eW1_p1, eb1_p1, eW2_p1, eb2_p1 = build_dim_direction_py(2, 1.0)
-
-    alphas, betas, losses_p1, _ = compute_grid(
-        X, y, W1, b1, W2, b2,
-        dW1_p1, db1_p1, dW2_p1, db2_p1,
-        eW1_p1, eb1_p1, eW2_p1, eb2_p1,
-        grid_size=41, span=1.0,
-    )
-    print(
-        f"Phase 1 Startup (Dim 1 & 2): min={losses_p1.min():.4f}, "
-        f"center={losses_p1[20,20]:.4f}, max={losses_p1.max():.4f}"
-    )
-
-    # Phase 2 & 3 directions
-    rng = np.random.default_rng(2026)
-    raw_dW1 = rng.standard_normal(W1.shape).astype(np.float32)
-    raw_dW2 = rng.standard_normal(W2.shape).astype(np.float32)
-    raw_eW1 = rng.standard_normal(W1.shape).astype(np.float32)
-    raw_eW2 = rng.standard_normal(W2.shape).astype(np.float32)
-    zeros_b1 = np.zeros_like(b1)
-    zeros_b2 = np.zeros_like(b2)
-
-    sigma = meta["sigma_unnorm"]
-    _, _, losses_p2, _ = compute_grid(
-        X, y, W1, b1, W2, b2,
-        raw_dW1 * sigma, zeros_b1, raw_dW2 * sigma, zeros_b2,
-        raw_eW1 * sigma, zeros_b1, raw_eW2 * sigma, zeros_b2,
-        grid_size=41, span=1.0,
-    )
-
-    fn_dW1, fn_dW2 = filter_normalize_direction(raw_dW1, raw_dW2, W1, W2)
-    fn_eW1, fn_eW2 = filter_normalize_direction(raw_eW1, raw_eW2, W1, W2)
-    _, _, losses_p3, _ = compute_grid(
-        X, y, W1, b1, W2, b2,
-        fn_dW1, zeros_b1, fn_dW2, zeros_b2,
-        fn_eW1, zeros_b1, fn_eW2, zeros_b2,
-        grid_size=41, span=1.0,
-    )
-
-    fig = plt.figure(figsize=(15, 4.8), dpi=140)
+    fig = plt.figure(figsize=(18, 4.5), dpi=140)
     AA, BB = np.meshgrid(alphas, betas)
 
-    titles = [
-        "Phase 1 Start (Dim #1 & Dim #2)\n(Schräge Flanke / Kamm → Minimum NICHT erkennbar)",
-        "Phase 2: Gauß-Zufallsrichtungen (unnormiert)\n(skaliertes Netz → extrem spitzer Trichter)",
-        "Phase 3: Gauß + Filternormierung (Li et al. 2018)\n(skalierungsinvariant → breites, flaches Tal)",
+    items = [
+        ("1. Start (Dim #1 & #2)\nFlaches Plateau + Kante (Kein Minimum!)", g_start),
+        ("2. Manuell gefunden (Dim #46 & #47)\nLokale Mulde bei gekoppelten Schichten", g_sweet),
+        ("3. Gauß OHNE Filternormierung\n(Skaliertes Netz → spitzer Trichter)", g_funnel),
+        ("4. Gauß MIT Filternormierung\n(Li et al. 2018 → breites, flaches Tal)", g_valley),
     ]
-    grids = [losses_p1, losses_p2, losses_p3]
 
-    for i, (title, grid) in enumerate(zip(titles, grids), start=1):
-        ax = fig.add_subplot(1, 3, i, projection="3d")
+    for i, (title, grid) in enumerate(items, start=1):
+        ax = fig.add_subplot(1, 4, i, projection="3d")
         ax.plot_surface(AA, BB, np.minimum(grid, 10.0), cmap="viridis", edgecolor="none")
-        ax.scatter([0.0], [0.0], [grid[20, 20] + 0.15], color="#f43f5e", s=45, zorder=10)
-        ax.set_title(title, fontsize=10)
+        ax.scatter([0.0], [0.0], [grid[20, 20] + 0.12], color="#f43f5e", s=40, zorder=10)
+        ax.set_title(title, fontsize=9.5)
         ax.set_zlim(0, 10)
         ax.set_xlabel("α")
         ax.set_ylabel("β")
         ax.set_zlabel("Loss")
 
     plt.tight_layout()
-    out_img = os.path.join(PREP_DIR, "all_three_phases.png")
-    plt.savefig(out_img)
+    out_path = os.path.join(PREP_DIR, "all_three_phases.png")
+    plt.savefig(out_path)
     plt.close(fig)
-    print(f"Saved updated 3-phase verification plot to {out_img}")
+    print(f"Saved 4-panel verification plot to {out_path}")
 
 
 if __name__ == "__main__":

@@ -325,16 +325,57 @@ export class LandscapePlotter {
 
     const { gridSize, losses } = data;
 
-    // Clean up previous mesh
-    if (this.surfaceMesh) {
-      this.scene.remove(this.surfaceMesh);
-      this.surfaceMesh.geometry.dispose();
-      this.surfaceMesh.material.dispose();
-    }
-    if (this.wireMesh) {
-      this.scene.remove(this.wireMesh);
-      this.wireMesh.geometry.dispose();
-      this.wireMesh.material.dispose();
+    // Reuse geometry across updates for zero GC overhead and 60 FPS slider scrubbing!
+    if (!this.surfaceMesh || this.currentGridSize !== gridSize) {
+      if (this.surfaceMesh) {
+        this.scene.remove(this.surfaceMesh);
+        this.surfaceMesh.geometry.dispose();
+        this.surfaceMesh.material.dispose();
+      }
+      if (this.wireMesh) {
+        this.scene.remove(this.wireMesh);
+        this.wireMesh.geometry.dispose();
+        this.wireMesh.material.dispose();
+      }
+      this.currentGridSize = gridSize;
+      const numVerts = gridSize * gridSize;
+      this.positionsArray = new Float32Array(numVerts * 3);
+      this.colorsArray = new Float32Array(numVerts * 3);
+
+      const indices = [];
+      for (let ib = 0; ib < gridSize - 1; ib++) {
+        for (let ia = 0; ia < gridSize - 1; ia++) {
+          const a = ib * gridSize + ia;
+          const b = ib * gridSize + (ia + 1);
+          const c = (ib + 1) * gridSize + ia;
+          const d = (ib + 1) * gridSize + (ia + 1);
+          indices.push(a, c, b);
+          indices.push(b, c, d);
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(this.positionsArray, 3));
+      geo.setAttribute("color", new THREE.BufferAttribute(this.colorsArray, 3));
+      geo.setIndex(indices);
+
+      const mat = new THREE.MeshPhongMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        shininess: 28,
+        specular: new THREE.Color(0x222222),
+      });
+      this.surfaceMesh = new THREE.Mesh(geo, mat);
+      this.scene.add(this.surfaceMesh);
+
+      const wireMat = new THREE.MeshBasicMaterial({
+        color: 0x0f172a,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.18,
+      });
+      this.wireMesh = new THREE.Mesh(geo, wireMat);
+      this.scene.add(this.wireMesh);
     }
 
     let minLoss = Infinity;
@@ -344,14 +385,11 @@ export class LandscapePlotter {
       if (losses[i] > maxLoss) maxLoss = losses[i];
     }
 
-    // Use a consistent reference ceiling (zCap = 10.0, or slightly lower if the whole surface is very flat
-    // in manual exploration, but bounded below by 4.5 so slopes and funnels have true visual scale!)
     const effectiveCap = Math.max(4.5, Math.min(this.zCap, maxLoss));
     const baseMin = Math.min(0.12, minLoss);
 
-    const numVerts = gridSize * gridSize;
-    const positions = new Float32Array(numVerts * 3);
-    const colors = new Float32Array(numVerts * 3);
+    const positions = this.positionsArray;
+    const colors = this.colorsArray;
 
     for (let ib = 0; ib < gridSize; ib++) {
       const zCoord = -1.0 + (2.0 * ib) / (gridSize - 1);
@@ -375,43 +413,10 @@ export class LandscapePlotter {
       }
     }
 
-    const indices = [];
-    for (let ib = 0; ib < gridSize - 1; ib++) {
-      for (let ia = 0; ia < gridSize - 1; ia++) {
-        const a = ib * gridSize + ia;
-        const b = ib * gridSize + (ia + 1);
-        const c = (ib + 1) * gridSize + ia;
-        const d = (ib + 1) * gridSize + (ia + 1);
-        indices.push(a, c, b);
-        indices.push(b, c, d);
-      }
-    }
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    geo.setIndex(indices);
+    const geo = this.surfaceMesh.geometry;
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
     geo.computeVertexNormals();
-
-    const mat = new THREE.MeshPhongMaterial({
-      vertexColors: true,
-      side: THREE.DoubleSide,
-      shininess: 28,
-      specular: new THREE.Color(0x222222),
-    });
-
-    this.surfaceMesh = new THREE.Mesh(geo, mat);
-    this.scene.add(this.surfaceMesh);
-
-    // Subtle wireframe overlay for crisp 3D depth perception on mobile screens
-    const wireMat = new THREE.MeshBasicMaterial({
-      color: 0x0f172a,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.18,
-    });
-    this.wireMesh = new THREE.Mesh(geo, wireMat);
-    this.scene.add(this.wireMesh);
 
     // Position the glowing red marker at the center (alpha=0, beta=0)
     // Only highlight it prominently when we are in random/filter-norm mode or if the user

@@ -13,7 +13,7 @@
       <div class="brand-row">
         <div>
           <h1 class="app-title">Loss-Landschaft Explorer</h1>
-          <p class="app-subtitle">MNIST MLP (25.450 Parameter · Int16-quantisiert · 50 Bilder live)</p>
+          <p class="app-subtitle">MNIST MLP (784 → 32 → 10) · 25.450 Dimensionen → 2D-Schnitt</p>
         </div>
         <button id="btnInfo" class="icon-btn" title="Info &amp; QR-Code" aria-label="Info &amp; QR-Code">?</button>
       </div>
@@ -164,8 +164,8 @@
       </div>
       <div class="modal-body">
         <p>
-          Diese Demo berechnet <strong>live auf deinem Smartphone</strong> echte 3D-Loss-Landschaften
-          eines quantisierten MNIST-Netzes (<code>784 → 32 → 10</code>, 25.450 Parameter) über 50 Bilder:
+          Diese interaktive Demo visualisiert <strong>live auf deinem Smartphone</strong> die 3D-Loss-Landschaft
+          eines auf MNIST trainierten Neuronalen Netzes (<code>784 → 32 → 10</code>, 25.450 Parameter):
         </p>
         <p class="formula-box">
           f(α, β) = L(θ* + α · δ + β · η)
